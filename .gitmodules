@@ -1,0 +1,3 @@
+[submodule "softcam"]
+	path = softcam
+	url = https://github.com/tshino/softcam.git

@@ -1,0 +1,9 @@
+{
+  "itemGroup.Cameramod": "Cameramod",
+  "entity.cameramod.camera": "Camera",
+  "item.cameramod.camera_item": "Camera",
+  "item.cameramod.camera_orienter": "Camera Orienter",
+  "item.cameramod.camera_activator": "Camera Activator",
+  "item.cameramod.camera_mover": "Camera Mover",
+  "item.cameramod.camera_fixer": "Camera Fixer"
+}

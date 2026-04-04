@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "id": "cameramod",
+  "version": "${version}",
+  "name": "cameramod",
+  "description": "A Camera entity's POV right into a virtual webcam",
+  "authors": ["TGdoesCode"],
+  "contact": {},
+  "license": "MIT",
+  "--accessWidener": "cameramod.accesswidener",
+  "icon": "assets/cameramod/textures/item/camera_item.png",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-datagen": [
+      "me.tg.cameramod.client.CameramodDataGenerator"
+    ],
+    "client": [
+      "me.tg.cameramod.client.CameramodClient"
+    ],
+    "main": [
+      "me.tg.cameramod.Cameramod"
+    ]
+  },
+  "mixins": [
+    "cameramod.mixins.json",
+    {
+      "config": "cameramod.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric": "*",
+    "minecraft": "${minecraft_version}"
+  },
+  "modmenu": {
+    "links": {
+      "modmenu.discord": "https://discord.gg/8v6NvACFX5"
+    },
+    "parent": {
+      "id": "cameramod",
+      "name": "Cameramod",
+      "description": "A Camera entity's POV right into a virtual webcam",
+      "icon": "assets/cameramod/textures/item/camera_item.png"
+    },
+    "update_checker": true
+  }
+}
