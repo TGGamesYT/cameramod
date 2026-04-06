@@ -4,16 +4,21 @@ import com.sun.jna.*;
 import com.sun.jna.platform.win32.Shell32;
 import com.sun.jna.platform.win32.WinDef.HWND;
 import com.sun.jna.platform.win32.WinDef.INT_PTR;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import java.io.*;
 import java.nio.file.Files;
 
 /**
- * Softcam loader + JNA wrapper for the native Softcam Sender API.
- * Extracts DLL + installer to ./natives and only runs installer once.
+ * JNA wrapper for the Softcam virtual camera driver.
+ * Extracts native DLL + installer to APPDATA, registers the COM driver once,
+ * then provides a clean Java API for creating cameras and sending frames.
  */
 public class SoftCam {
 
-    // Interface that maps directly to the native functions
+    private static final Logger LOGGER = LogManager.getLogger("cameramod/SoftCam");
+
     public interface SoftcamLibrary extends Library {
         Pointer scCreateCamera(int width, int height, float framerate);
         void scDeleteCamera(Pointer camera);
@@ -23,122 +28,126 @@ public class SoftCam {
     }
 
     private static SoftcamLibrary INSTANCE;
+    private static boolean initialized = false;
 
     private static final File NATIVE_DIR = new File(System.getenv("APPDATA"), ".minecraft_cameramod");
     private static final File REGISTERED_MARKER = new File(NATIVE_DIR, ".softcam_registered");
 
+    // Reusable JNA Memory buffer to avoid allocating on every frame
+    private static Memory frameMemory;
+    private static int frameMemorySize;
+
+    public static boolean isInitialized() {
+        return initialized;
+    }
+
     /**
-     * Initializes Softcam by extracting DLL + installer, installing the driver if needed, then loading DLL.
+     * Extracts natives, registers the COM driver if needed, and loads the DLL.
+     * Safe to call multiple times - only initializes once.
      */
     public static void initialize() {
-        if (INSTANCE != null) return; // already loaded
+        if (initialized) return;
+
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (!os.contains("win")) {
+            LOGGER.warn("SoftCam only supports Windows (detected: {}). Virtual camera disabled.", os);
+            return;
+        }
 
         try {
-            // Pick correct arch
-            String os = System.getProperty("os.name").toLowerCase();
-            String arch = System.getProperty("os.arch").toLowerCase();
-            String subdir;
+            String arch = System.getProperty("os.arch", "").toLowerCase();
+            String subdir = arch.contains("64") ? "windows-x64" : "windows-x86";
 
-            if (os.contains("win")) {
-                if (arch.contains("64")) subdir = "windows-x64";
-                else subdir = "windows-x86";
-            } else {
-                throw new UnsupportedOperationException("Only Windows supported in this build (" + os + "/" + arch + ")");
+            if (!NATIVE_DIR.exists() && !NATIVE_DIR.mkdirs()) {
+                throw new IOException("Failed to create native directory: " + NATIVE_DIR);
             }
 
-            if (!NATIVE_DIR.exists()) NATIVE_DIR.mkdirs();
+            File dllFile = extractResource("/natives/" + subdir + "/softcam.dll", "softcam.dll");
+            File installerFile = extractResource("/natives/" + subdir + "/softcam_installer.exe", "softcam_installer.exe");
 
-            // Extract DLL
-            String dllResource = "/natives/" + subdir + "/softcam.dll";
-            File dllFile = extractResource(dllResource, "softcam.dll");
-
-            // Extract installer
-            String installerResource = "/natives/" + subdir + "/softcam_installer.exe";
-            File installerFile = extractResource(installerResource, "softcam_installer.exe");
-
-            // Run installer if not already registered
             if (!REGISTERED_MARKER.exists()) {
-                System.out.println("Softcam driver not registered yet. Running installer...");
-                installSoftcam(installerFile, dllFile);
-                // Mark as installed
-                REGISTERED_MARKER.createNewFile();
-            } else {
-                System.out.println("Softcam driver already registered, skipping installer.");
+                LOGGER.info("Softcam driver not registered. Running installer with UAC...");
+                runAsAdmin(installerFile.getAbsolutePath(),
+                        "register \"" + dllFile.getAbsolutePath() + "\"");
+                if (!REGISTERED_MARKER.createNewFile()) {
+                    LOGGER.warn("Could not create registration marker file");
+                }
             }
 
-            // Load DLL via JNA
             System.load(dllFile.getAbsolutePath());
             INSTANCE = Native.load(dllFile.getAbsolutePath(), SoftcamLibrary.class);
+            initialized = true;
+            LOGGER.info("Softcam loaded ({}) from {}", subdir, dllFile.getAbsolutePath());
 
-            System.out.println("Softcam DLL loaded from " + dllResource);
-
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to install/load Softcam native library", e);
+        } catch (Exception e) {
+            LOGGER.error("Failed to initialize Softcam native library", e);
         }
     }
 
-    private static File extractResource(String resourcePath, String filename) throws IOException {
-        InputStream in = SoftCam.class.getResourceAsStream(resourcePath);
-        if (in == null) throw new FileNotFoundException("Resource not found in jar: " + resourcePath);
+    // ---- Public API ----
 
-        File outFile = new File(NATIVE_DIR, filename);
-
-        // Only extract if missing
-        if (!outFile.exists()) {
-            Files.copy(in, outFile.toPath());
-        }
-
-        in.close();
-        return outFile;
-    }
-
-
-    private static void installSoftcam(File installerFile, File dllFile) {
-        String args = "register \"" + dllFile.getAbsolutePath() + "\"";
-        System.out.println("Running Softcam installer with UAC: " + installerFile.getAbsolutePath() + " " + args);
-        WindowsElevator.runAsAdmin(installerFile.getAbsolutePath(), args);
-    }
-
-    // Helper methods for convenience
     public static Pointer createCamera(int width, int height, float framerate) {
-        return INSTANCE.scCreateCamera(width, height, framerate);
+        if (!initialized) {
+            LOGGER.warn("createCamera called but SoftCam is not initialized");
+            return null;
+        }
+        Pointer cam = INSTANCE.scCreateCamera(width, height, framerate);
+        if (cam == null) {
+            LOGGER.error("scCreateCamera returned null ({}x{} @ {}fps)", width, height, framerate);
+        }
+        return cam;
     }
 
     public static void deleteCamera(Pointer camera) {
+        if (!initialized || camera == null) return;
         INSTANCE.scDeleteCamera(camera);
     }
 
+    /**
+     * Sends a BGR24 frame to the virtual camera.
+     * Reuses an internal JNA Memory buffer to avoid per-frame allocation.
+     */
     public static void sendFrame(Pointer camera, byte[] frame) {
-        Memory mem = new Memory(frame.length);
-        mem.write(0, frame, 0, frame.length);
-        INSTANCE.scSendFrame(camera, mem);
+        if (!initialized || camera == null || frame == null) return;
+
+        int len = frame.length;
+        if (frameMemory == null || frameMemorySize != len) {
+            frameMemory = new Memory(len);
+            frameMemorySize = len;
+        }
+        frameMemory.write(0, frame, 0, len);
+        INSTANCE.scSendFrame(camera, frameMemory);
     }
 
     public static boolean waitForConnection(Pointer camera, float timeout) {
+        if (!initialized || camera == null) return false;
         return INSTANCE.scWaitForConnection(camera, timeout);
     }
 
     public static boolean isConnected(Pointer camera) {
+        if (!initialized || camera == null) return false;
         return INSTANCE.scIsConnected(camera);
     }
 
-    /**
-     * Windows helper for running an executable with elevation (UAC prompt).
-     */
-    static class WindowsElevator {
-        public static void runAsAdmin(String exePath, String args) {
-            HWND hwnd = null; // no parent window
-            String operation = "runas"; // triggers UAC
-            String parameters = args;
-            String directory = null;
-            int showCmd = 1; // SW_SHOWNORMAL
+    // ---- Internal helpers ----
 
-            INT_PTR result = Shell32.INSTANCE.ShellExecute(
-                    hwnd, operation, exePath, parameters, directory, showCmd);
-
-            if (result.intValue() <= 32) {
-                throw new RuntimeException("ShellExecute failed with code: " + result.intValue());
+    private static File extractResource(String resourcePath, String filename) throws IOException {
+        File outFile = new File(NATIVE_DIR, filename);
+        try (InputStream in = SoftCam.class.getResourceAsStream(resourcePath)) {
+            if (in == null) throw new FileNotFoundException("Resource not found in jar: " + resourcePath);
+            if (!outFile.exists()) {
+                Files.copy(in, outFile.toPath());
             }
+        }
+        return outFile;
+    }
+
+    private static void runAsAdmin(String exePath, String args) {
+        LOGGER.info("UAC elevation: {} {}", exePath, args);
+        INT_PTR result = Shell32.INSTANCE.ShellExecute(
+                (HWND) null, "runas", exePath, args, null, 1 /* SW_SHOWNORMAL */);
+        if (result.intValue() <= 32) {
+            throw new RuntimeException("ShellExecute failed with code " + result.intValue());
         }
     }
 }

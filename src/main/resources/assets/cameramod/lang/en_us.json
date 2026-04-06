@@ -2,8 +2,24 @@
   "itemGroup.Cameramod": "Cameramod",
   "entity.cameramod.camera": "Camera",
   "item.cameramod.camera_item": "Camera",
-  "item.cameramod.camera_orienter": "Camera Orienter",
+  "item.cameramod.camera_item.tooltip.1": "Places a camera entity in the world.",
+  "item.cameramod.camera_item.tooltip.2": "Right-click a block or water to place.",
+
   "item.cameramod.camera_activator": "Camera Activator",
+  "item.cameramod.camera_activator.tooltip.1": "Bind a camera to yourself.",
+  "item.cameramod.camera_activator.tooltip.2": "Right-click a camera entity.",
+
+  "item.cameramod.camera_orienter": "Camera Orienter",
+  "item.cameramod.camera_orienter.tooltip.1": "Points the nearest camera where you look.",
+  "item.cameramod.camera_orienter.tooltip.2": "Right-click while holding.",
+
   "item.cameramod.camera_mover": "Camera Mover",
-  "item.cameramod.camera_fixer": "Camera Fixer"
+  "item.cameramod.camera_mover.tooltip.1": "Makes a camera follow you.",
+  "item.cameramod.camera_mover.tooltip.2": "Right-click a camera to start.",
+  "item.cameramod.camera_mover.tooltip.3": "Right-click air to stop.",
+
+  "item.cameramod.camera_fixer": "Camera Fixer",
+  "item.cameramod.camera_fixer.tooltip.1": "Locks a camera onto you.",
+  "item.cameramod.camera_fixer.tooltip.2": "Right-click a camera to toggle.",
+  "item.cameramod.camera_fixer.tooltip.3": "Right-click air to check status."
 }

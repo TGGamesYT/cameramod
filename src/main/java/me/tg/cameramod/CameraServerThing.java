@@ -1,80 +1,59 @@
 package me.tg.cameramod;
 
 import com.mojang.brigadier.arguments.StringArgumentType;
-import com.nimbusds.openid.connect.sdk.federation.entities.EntityType;
 import io.netty.buffer.ByteBuf;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
-import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
-import net.fabricmc.fabric.api.networking.v1.PlayerLookup;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.command.argument.EntityArgumentType;
-import net.minecraft.command.argument.UuidArgumentType;
 import net.minecraft.network.PacketByteBuf;
 import net.minecraft.network.RegistryByteBuf;
 import net.minecraft.network.codec.PacketCodec;
 import net.minecraft.network.packet.CustomPayload;
-import net.minecraft.network.packet.s2c.common.CustomPayloadS2CPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.server.dedicated.MinecraftDedicatedServer;
 import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 
 import java.util.UUID;
 import java.util.function.Supplier;
 
-/**
- * Server-side helper:
- * - register(): registers /setcamera command and the C2S receiver rebroadcast.
- *
- * Notes:
- * - We send a CustomPayloadS2CPacket(Identifier, PacketByteBuf) directly to the player's network handler.
- * - We accept C2S CustomPayloadC2SPacket with same IDENT (camera_frame) and rebroadcast to other players.
- */
 public final class CameraServerThing {
 
     public static void register() {
         registerCommand();
-        registerReceivers();
     }
 
     private static void registerCommand() {
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             dispatcher.register(
                     CommandManager.literal("setcamera")
-                            // 0 args
                             .executes(ctx -> {
                                 ServerPlayerEntity executor = ctx.getSource().getPlayer();
                                 UUID entityUUID = ServerItems.CAMERA_COMMAND_STORAGE.get(executor.getUuid());
                                 if (entityUUID == null) {
-                                    ctx.getSource().sendError(Text.literal("No camera UUID found for your player."));
+                                    ctx.getSource().sendError(Text.literal("No camera bound. Use Camera Activator on a camera first."));
                                     return 0;
                                 }
                                 return runSetCamera(ctx.getSource(), executor.getName().getString(), entityUUID);
                             })
-                            // 1 arg
                             .then(CommandManager.argument("firstArg", StringArgumentType.string())
                                     .executes(ctx -> {
                                         ServerPlayerEntity executor = ctx.getSource().getPlayer();
                                         String arg = StringArgumentType.getString(ctx, "firstArg");
 
-                                        // try to find player by name
                                         ServerPlayerEntity target = ctx.getSource().getServer().getPlayerManager().getPlayer(arg);
                                         UUID entityUUID;
 
                                         if (target != null) {
-                                            // arg is player → get entity UUID from CAMERA_COMMAND_STORAGE
                                             entityUUID = ServerItems.CAMERA_COMMAND_STORAGE.get(target.getUuid());
                                             if (entityUUID == null) {
-                                                ctx.getSource().sendError(Text.literal("No camera UUID found for player: " + target.getName().getString()));
+                                                ctx.getSource().sendError(Text.literal("No camera bound for player: " + target.getName().getString()));
                                                 return 0;
                                             }
                                             return runSetCamera(ctx.getSource(), target.getName().getString(), entityUUID);
                                         } else {
-                                            // arg is UUID → executor is player
                                             try {
                                                 entityUUID = UUID.fromString(arg);
                                             } catch (IllegalArgumentException e) {
@@ -85,7 +64,6 @@ public final class CameraServerThing {
                                         }
                                     })
                             )
-                            // 2 args
                             .then(CommandManager.argument("player", EntityArgumentType.player())
                                     .then(CommandManager.argument("entityUuid", EntityArgumentType.entity())
                                             .executes(ctx -> {
@@ -97,7 +75,6 @@ public final class CameraServerThing {
                             )
             );
         });
-
     }
 
     private static int runSetCamera(ServerCommandSource source, String playerName, UUID entityUuid) {
@@ -114,19 +91,6 @@ public final class CameraServerThing {
         return 1;
     }
 
-    private static void registerReceivers() {
-        ServerPlayNetworking.registerGlobalReceiver(CameraFrameS2CPayload.ID, (payload, context) -> {
-            MinecraftServer server = context.server();
-            CameraFrameS2CPayload payload1 = new CameraFrameS2CPayload(payload.bytes());
-
-            if (server == null) return;
-
-            for (ServerWorld world : server.getWorlds()) {
-                for (ServerPlayerEntity player : PlayerLookup.world(world)) {
-                ServerPlayNetworking.send(player, payload1);
-            }}
-        });
-    }
     public record SetCameraS2CPayload(UUID uuid) implements CustomPayload {
         public static final PacketCodec<ByteBuf, UUID> PACKET_CODEC = new PacketCodec<ByteBuf, UUID>() {
             public UUID decode(ByteBuf byteBuf) {
@@ -139,27 +103,8 @@ public final class CameraServerThing {
         };
         public static final Identifier SET_CAMERA_ID = Identifier.of(Cameramod.MOD_ID, "set_camera");
         public static final Id<SetCameraS2CPayload> ID = new Id<>(SET_CAMERA_ID);
-        public static final PacketCodec<RegistryByteBuf, SetCameraS2CPayload> CODEC = PacketCodec.tuple(PACKET_CODEC, SetCameraS2CPayload::uuid, SetCameraS2CPayload::new);
-
-        @Override
-        public Id<? extends CustomPayload> getId() {
-            return ID;
-        }
-    }
-
-    public record CameraFrameS2CPayload(byte[] bytes) implements CustomPayload {
-        public static final PacketCodec<ByteBuf, byte[]> PACKET_CODEC = new PacketCodec<ByteBuf, byte[]>() {
-            public byte[] decode(ByteBuf byteBuf) {
-                return PacketByteBuf.readByteArray(byteBuf);
-            }
-
-            public void encode(ByteBuf byteBuf, byte[] bytes) {
-                PacketByteBuf.writeByteArray(byteBuf, bytes);
-            }
-        };
-        public static final Identifier CAMERA_FRAME_ID = Identifier.of(Cameramod.MOD_ID, "camera_frame");
-        public static final Id<CameraFrameS2CPayload> ID = new Id<>(CAMERA_FRAME_ID);
-        public static final PacketCodec<RegistryByteBuf, CameraFrameS2CPayload> CODEC = PacketCodec.tuple(PACKET_CODEC, CameraFrameS2CPayload::bytes, CameraFrameS2CPayload::new);
+        public static final PacketCodec<RegistryByteBuf, SetCameraS2CPayload> CODEC =
+                PacketCodec.tuple(PACKET_CODEC, SetCameraS2CPayload::uuid, SetCameraS2CPayload::new);
 
         @Override
         public Id<? extends CustomPayload> getId() {

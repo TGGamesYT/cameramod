@@ -4,6 +4,8 @@
   "package": "me.tg.cameramod.mixin.client",
   "compatibilityLevel": "JAVA_21",
   "client": [
+    "GameRendererMixin",
+    "MinecraftClientAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

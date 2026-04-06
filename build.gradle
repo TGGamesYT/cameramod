@@ -87,6 +87,16 @@ jar {
     }
 }
 
+// ---- Softcam native build tasks ----
+// Run:  ./gradlew buildSoftcam   to rebuild softcam.dll + softcam_installer.exe
+// Requires Visual Studio with C++ Desktop workload installed.
+tasks.register('buildSoftcam', Exec) {
+    group = 'build'
+    description = 'Build softcam DLL and installer from source, copy into resources'
+    workingDir = file('softcam')
+    commandLine 'cmd', '/c', 'build_softcam.bat'
+}
+
 // configure the maven publication
 publishing {
     publications {
