@@ -111,4 +111,30 @@ public final class CameraServerThing {
             return ID;
         }
     }
+
+    // Tells a client which camera entity is bound to their virtualcam
+    public record BindCameraS2CPayload(UUID cameraUuid) implements CustomPayload {
+        public static final PacketCodec<ByteBuf, UUID> UUID_CODEC = new PacketCodec<ByteBuf, UUID>() {
+            public UUID decode(ByteBuf byteBuf) { return PacketByteBuf.readUuid(byteBuf); }
+            public void encode(ByteBuf byteBuf, UUID uuid) { PacketByteBuf.writeUuid(byteBuf, uuid); }
+        };
+        public static final Identifier BIND_CAMERA_ID = Identifier.of(Cameramod.MOD_ID, "bind_camera");
+        public static final Id<BindCameraS2CPayload> ID = new Id<>(BIND_CAMERA_ID);
+        public static final PacketCodec<RegistryByteBuf, BindCameraS2CPayload> CODEC =
+                PacketCodec.tuple(UUID_CODEC, BindCameraS2CPayload::cameraUuid, BindCameraS2CPayload::new);
+
+        @Override
+        public Id<? extends CustomPayload> getId() { return ID; }
+    }
+
+    // Tells a client to unbind their virtualcam
+    public record UnbindCameraS2CPayload() implements CustomPayload {
+        public static final Identifier UNBIND_CAMERA_ID = Identifier.of(Cameramod.MOD_ID, "unbind_camera");
+        public static final Id<UnbindCameraS2CPayload> ID = new Id<>(UNBIND_CAMERA_ID);
+        public static final PacketCodec<RegistryByteBuf, UnbindCameraS2CPayload> CODEC =
+                PacketCodec.unit(new UnbindCameraS2CPayload());
+
+        @Override
+        public Id<? extends CustomPayload> getId() { return ID; }
+    }
 }

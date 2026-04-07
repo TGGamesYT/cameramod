@@ -5,7 +5,7 @@
   "compatibilityLevel": "JAVA_21",
   "client": [
     "CameraAccessor",
-    "CloudRendererAccessor",
+    "DebugRendererMixin",
     "GameRendererMixin",
     "MinecraftClientAccessor",
     "WorldRendererMixin"

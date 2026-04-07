@@ -49,6 +49,15 @@ public class CameramodClient implements ClientModInitializer {
             }
         });
 
+        // Camera bind/unbind for virtualcam rendering
+        ClientPlayNetworking.registerGlobalReceiver(CameraServerThing.BindCameraS2CPayload.ID, (payload, context) -> {
+            CameraRenderer.setBoundCamera(payload.cameraUuid());
+        });
+
+        ClientPlayNetworking.registerGlobalReceiver(CameraServerThing.UnbindCameraS2CPayload.ID, (payload, context) -> {
+            CameraRenderer.clearBoundCamera();
+        });
+
         // Keep cursor unlocked when viewing through a camera
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (isCamera && client.mouse != null) {

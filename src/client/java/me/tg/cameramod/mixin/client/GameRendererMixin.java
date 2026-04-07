@@ -41,11 +41,18 @@ public class GameRendererMixin {
         if (CameraRenderer.isRendering()) ci.cancel();
     }
 
-    // Return base FOV during camera pass — no sprint zoom, no death zoom, no submersion
     @Inject(method = "getFov", at = @At("HEAD"), cancellable = true)
     private void cameramod$fixedCameraFov(Camera camera, float tickProgress, boolean changingFov, CallbackInfoReturnable<Float> cir) {
         if (CameraRenderer.isRendering()) {
             cir.setReturnValue((float) MinecraftClient.getInstance().options.getFov().getValue().intValue());
+        }
+    }
+
+    // Suppress block outline (hitbox highlight) on camera
+    @Inject(method = "shouldRenderBlockOutline", at = @At("HEAD"), cancellable = true)
+    private void cameramod$skipBlockOutline(CallbackInfoReturnable<Boolean> cir) {
+        if (CameraRenderer.isRendering()) {
+            cir.setReturnValue(false);
         }
     }
 }

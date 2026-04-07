@@ -64,6 +64,7 @@ public class SoftCam {
 
             File dllFile = extractResource("/natives/" + subdir + "/softcam.dll", "softcam.dll");
             File installerFile = extractResource("/natives/" + subdir + "/softcam_installer.exe", "softcam_installer.exe");
+            extractResource("/natives/uninstall_camera.bat", "uninstall_camera.bat");
 
             if (!REGISTERED_MARKER.exists()) {
                 LOGGER.info("Softcam driver not registered. Running installer with UAC...");

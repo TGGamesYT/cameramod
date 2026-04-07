@@ -46,6 +46,9 @@ public class Cameramod implements ModInitializer {
     public static final GameRules.Key<GameRules.BooleanRule> CAMERA_SEES_CHAT =
             GameRuleRegistry.register("cameraSeesChat", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(false));
 
+    public static final GameRules.Key<GameRules.BooleanRule> CAMERA_FLIPPED =
+            GameRuleRegistry.register("cameraFlipped", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(false));
+
     public static int camwidth = 860;
     public static int camheight = 480;
     public static float camframerate = 20f;
@@ -59,6 +62,8 @@ public class Cameramod implements ModInitializer {
         FabricDefaultAttributeRegistry.register(CAMERA_ENTITY_ENTITY_TYPE, CameraEntity.createCameraAttributes());
 
         PayloadTypeRegistry.playS2C().register(CameraServerThing.SetCameraS2CPayload.ID, CameraServerThing.SetCameraS2CPayload.CODEC);
+        PayloadTypeRegistry.playS2C().register(CameraServerThing.BindCameraS2CPayload.ID, CameraServerThing.BindCameraS2CPayload.CODEC);
+        PayloadTypeRegistry.playS2C().register(CameraServerThing.UnbindCameraS2CPayload.ID, CameraServerThing.UnbindCameraS2CPayload.CODEC);
 
         CameraServerThing.register();
         ServerItems.registerItems();

@@ -1,6 +1,12 @@
 @echo off
 setlocal
 
+echo ==============================
+echo Patching device name...
+echo ==============================
+
+powershell -Command "Get-ChildItem -Path 'softcam\src' -Recurse -Include *.cpp,*.h,*.rc | ForEach-Object { (Get-Content $_.FullName) -replace '\"Directshow Softcam\"', '\"Minecraft Virtualcam\"' | Set-Content $_.FullName }"
+
 :: ==============================
 :: Check for Windows SDK
 :: ==============================

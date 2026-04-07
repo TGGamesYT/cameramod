@@ -17,6 +17,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKey;
 import net.minecraft.registry.RegistryKeys;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
@@ -182,6 +183,11 @@ public class ServerItems {
 
             if (entity instanceof CameraEntity) {
                 CAMERA_COMMAND_STORAGE.put(user.getUuid(), entity.getUuid());
+                // Sync to client so CameraRenderer knows which camera to render
+                if (user instanceof ServerPlayerEntity serverPlayer) {
+                    ServerPlayNetworking.send(serverPlayer,
+                            new CameraServerThing.BindCameraS2CPayload(entity.getUuid()));
+                }
                 user.sendMessage(Text.literal("Camera bound to you"), true);
                 return ActionResult.SUCCESS;
             }
