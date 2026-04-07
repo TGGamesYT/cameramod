@@ -13,6 +13,9 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.registry.*;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
+import net.minecraft.world.GameRules;
+import net.fabricmc.fabric.api.gamerule.v1.GameRuleFactory;
+import net.fabricmc.fabric.api.gamerule.v1.GameRuleRegistry;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -39,6 +42,9 @@ public class Cameramod implements ModInitializer {
             .icon(() -> new ItemStack(ServerItems.CAMERA_ITEM))
             .displayName(Text.translatable("itemGroup.Cameramod"))
             .build();
+
+    public static final GameRules.Key<GameRules.BooleanRule> CAMERA_SEES_CHAT =
+            GameRuleRegistry.register("cameraSeesChat", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(false));
 
     public static int camwidth = 860;
     public static int camheight = 480;

@@ -7,26 +7,26 @@ import me.tg.cameramod.CameraEntity;
 import me.tg.cameramod.Cameramod;
 import me.tg.cameramod.ServerItems;
 import me.tg.cameramod.SoftCam;
+import me.tg.cameramod.mixin.client.CameraAccessor;
+import me.tg.cameramod.mixin.client.CloudRendererAccessor;
 import me.tg.cameramod.mixin.client.MinecraftClientAccessor;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gl.Framebuffer;
 import net.minecraft.client.gl.SimpleFramebuffer;
+import net.minecraft.client.render.Camera;
+import net.minecraft.client.render.CloudRenderer;
 import net.minecraft.client.render.GameRenderer;
 import net.minecraft.client.render.RenderTickCounter;
+import net.minecraft.client.option.Perspective;
+import net.minecraft.client.texture.NativeImage;
 import net.minecraft.entity.Entity;
+import net.minecraft.util.Identifier;
 
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.UUID;
 
-/**
- * Secondary game renderer.
- *
- * After each player frame, swaps mc.framebuffer to an offscreen FBO,
- * swaps mc.cameraEntity to the bound camera, calls renderWorld() for
- * a second pass, captures the result, and restores everything.
- * The player never sees any flicker.
- */
 public class CameraRenderer {
 
     private static final int CAPTURE_INTERVAL = 3;
@@ -35,6 +35,48 @@ public class CameraRenderer {
     private static byte[] frameBytes;
     private static int frameCounter = 0;
     private static boolean rendering = false;
+    private static boolean offImageSent = false;
+
+    public static boolean isRendering() {
+        return rendering;
+    }
+
+    public static void sendOffImage() {
+        if (!SoftCam.isInitialized() || Cameramod.softcamCamera == null) return;
+
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.getResourceManager() == null) return;
+
+        try {
+            Identifier offTextureId = Identifier.of(Cameramod.MOD_ID, "textures/gui/off.png");
+            var resource = mc.getResourceManager().getResource(offTextureId);
+            if (resource.isEmpty()) return;
+
+            try (InputStream is = resource.get().getInputStream();
+                 NativeImage image = NativeImage.read(is)) {
+                int w = Cameramod.camwidth;
+                int h = Cameramod.camheight;
+                byte[] frame = new byte[w * h * 3];
+
+                for (int y = 0; y < h; y++) {
+                    for (int x = 0; x < w; x++) {
+                        int srcX = x * image.getWidth() / w;
+                        int srcY = y * image.getHeight() / h;
+                        int color = image.getColorArgb(srcX, srcY);
+                        int di = (y * w + x) * 3;
+                        frame[di]     = (byte) (color & 0xFF);         // B
+                        frame[di + 1] = (byte) ((color >> 8) & 0xFF);  // G
+                        frame[di + 2] = (byte) ((color >> 16) & 0xFF); // R
+                    }
+                }
+
+                SoftCam.sendFrame(Cameramod.softcamCamera, frame);
+                offImageSent = true;
+            }
+        } catch (Exception e) {
+            Cameramod.LOGGER.error("Failed to send off image", e);
+        }
+    }
 
     public static void onFrameRendered(GameRenderer gameRenderer, RenderTickCounter tickCounter) {
         if (rendering) return;
@@ -48,7 +90,16 @@ public class CameraRenderer {
         if (frameCounter % CAPTURE_INTERVAL != 0) return;
 
         Entity camera = getActiveCamera(mc);
-        if (camera == null) return;
+        if (camera == null) {
+            // No active camera — send off image once
+            if (!offImageSent) {
+                sendOffImage();
+            }
+            return;
+        }
+
+        // We have an active camera — reset the off image flag
+        offImageSent = false;
 
         rendering = true;
 
@@ -56,6 +107,18 @@ public class CameraRenderer {
         Entity savedCameraEntity = mc.getCameraEntity();
         MinecraftClientAccessor accessor = (MinecraftClientAccessor) mc;
         Framebuffer mainFbo = accessor.cameramod$getFramebuffer();
+        Perspective savedPerspective = mc.options.getPerspective();
+
+        Camera cam = gameRenderer.getCamera();
+        CameraAccessor camAccessor = (CameraAccessor) cam;
+        float savedCameraY = camAccessor.cameramod$getCameraY();
+        float savedLastCameraY = camAccessor.cameramod$getLastCameraY();
+
+        // Save cloud state to prevent wiggling on player's view
+        CloudRenderer cloudRenderer = mc.worldRenderer.getCloudRenderer();
+        CloudRendererAccessor cloudAccessor = (CloudRendererAccessor) cloudRenderer;
+        int savedCloudCenterX = cloudAccessor.cameramod$getCenterX();
+        int savedCloudCenterZ = cloudAccessor.cameramod$getCenterZ();
 
         try {
             int w = Cameramod.camwidth;
@@ -66,6 +129,15 @@ public class CameraRenderer {
 
             // Swap the framebuffer so WorldRenderer.render() targets our FBO
             accessor.cameramod$setFramebuffer(offscreenFbo);
+
+            // Force first-person so camera.update() doesn't use player's perspective
+            mc.options.setPerspective(Perspective.FIRST_PERSON);
+
+            // Set cameraY/lastCameraY to the CameraEntity's eye height so the
+            // camera view doesn't shift when the player crouches
+            float cameraEntityEyeHeight = camera.getStandingEyeHeight();
+            camAccessor.cameramod$setCameraY(cameraEntityEyeHeight);
+            camAccessor.cameramod$setLastCameraY(cameraEntityEyeHeight);
 
             // Swap camera entity so renderWorld uses the camera's POV
             mc.setCameraEntity(camera);
@@ -82,6 +154,25 @@ public class CameraRenderer {
             // Restore everything
             accessor.cameramod$setFramebuffer(mainFbo);
             mc.setCameraEntity(savedCameraEntity);
+            mc.options.setPerspective(savedPerspective);
+
+            // Restore Camera eye-height interpolation state
+            camAccessor.cameramod$setCameraY(savedCameraY);
+            camAccessor.cameramod$setLastCameraY(savedLastCameraY);
+
+            // Restore cloud state and force rebuild on next player frame
+            cloudAccessor.cameramod$setCenterX(savedCloudCenterX);
+            cloudAccessor.cameramod$setCenterZ(savedCloudCenterZ);
+            cloudAccessor.cameramod$setRebuild(true);
+
+            // Re-run camera.update() with the player entity to fully restore
+            // position, rotation, and all other Camera fields for the next frame
+            Entity playerEntity = savedCameraEntity != null ? savedCameraEntity : mc.player;
+            float tickProgress = tickCounter.getTickProgress(false);
+            boolean thirdPerson = !savedPerspective.isFirstPerson();
+            boolean frontView = savedPerspective.isFrontView();
+            cam.update(mc.world, playerEntity, thirdPerson, frontView, tickProgress);
+
             rendering = false;
         }
     }
@@ -95,6 +186,11 @@ public class CameraRenderer {
             if (entity.getUuid().equals(cameraUuid) && entity instanceof CameraEntity) {
                 return entity;
             }
+        }
+
+        // Camera was bound but no longer exists — send off image
+        if (!offImageSent) {
+            sendOffImage();
         }
         return null;
     }

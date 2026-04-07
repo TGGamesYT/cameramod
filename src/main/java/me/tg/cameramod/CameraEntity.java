@@ -22,6 +22,15 @@ public class CameraEntity extends LivingEntity {
 
     public CameraEntity(EntityType<? extends LivingEntity> type, World world) {
         super(type, world);
+        this.setNoGravity(true);
+    }
+
+    @Override
+    public void tick() {
+        // Keep lastBodyYaw/lastHeadYaw in sync so client-side interpolation works
+        this.lastBodyYaw = this.bodyYaw;
+        this.lastHeadYaw = this.headYaw;
+        super.tick();
     }
 
     @Override
@@ -31,6 +40,16 @@ public class CameraEntity extends LivingEntity {
 
     @Override
     public boolean damage(ServerWorld world, DamageSource source, float amount) {
+        return false;
+    }
+
+    @Override
+    public void kill(ServerWorld world) {
+        this.remove(RemovalReason.KILLED);
+    }
+
+    @Override
+    public boolean handleFallDamage(double fallDistance, float damagePerDistance, DamageSource damageSource) {
         return false;
     }
 
