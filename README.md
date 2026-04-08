@@ -1,5 +1,25 @@
-# Minecraft Virtualcam
+
+<h1 align="center">
+  <sub>
+    <img src="src/main/resources/assets/cameramod/textures/item/camera_item.png" width="150">
+  </sub>
+  <br>
+  Minecraft Virtualcam
+</h1>
+
 This is a minecraft mod for *1.21.8 Fabric*, which registers a *virtual camera* into the Windows system using [softcam](https://github.com/tshino/softcam) and streams a camera entity's rendered POV into it.
+
+<p align="center">
+  <a href="https://github.com/tggamesyt/cameramod/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/tggamesyt/cameramod?style=for-the-badge" alt="License">
+  </a>
+  <a href="https://github.com/tggamesyt/cameramod/releases">
+    <img src="https://img.shields.io/github/v/release/tggamesyt/cameramod?style=for-the-badge" alt="Release">
+  </a>
+  <a href="https://github.com/tggamesyt/cameramod/releases">
+    <img src="https://img.shields.io/github/downloads/tggamesyt/cameramod/total?style=for-the-badge" alt="Downloads">
+  </a>
+</p>
 
 <sub>Inspired by [Flashz's omegle mod](https://youtube.com/@flashzyt)</sub>
 
