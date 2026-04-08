@@ -2,6 +2,7 @@ package me.tg.cameramod.client;
 
 import me.tg.cameramod.CameraServerThing;
 import me.tg.cameramod.Cameramod;
+import me.tg.cameramod.SoftCam;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
@@ -24,6 +25,10 @@ public class CameramodClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        // Initialize SoftCam on the client side only (not on dedicated servers)
+        SoftCam.initialize();
+        Cameramod.softcamCamera = SoftCam.createCamera(Cameramod.camwidth, Cameramod.camheight, Cameramod.camframerate);
+
         EntityRendererRegistry.register(Cameramod.CAMERA_ENTITY_ENTITY_TYPE, CameraEntityRenderer::new);
         EntityModelLayerRegistry.registerModelLayer(MODEL_CAMERA_LAYER, CameraEntityModel::getTexturedModelData);
 

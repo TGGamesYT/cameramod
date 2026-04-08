@@ -56,8 +56,7 @@ public class Cameramod implements ModInitializer {
 
     @Override
     public void onInitialize() {
-        SoftCam.initialize();
-        softcamCamera = SoftCam.createCamera(camwidth, camheight, camframerate);
+        // SoftCam is initialized on the client side only (CameramodClient)
 
         FabricDefaultAttributeRegistry.register(CAMERA_ENTITY_ENTITY_TYPE, CameraEntity.createCameraAttributes());
 

@@ -6,8 +6,11 @@
   "client": [
     "CameraAccessor",
     "DebugRendererMixin",
+    "GameRendererAccessor",
     "GameRendererMixin",
+    "LightmapTextureManagerMixin",
     "MinecraftClientAccessor",
+    "WorldRendererAccessor",
     "WorldRendererMixin"
   ],
   "injectors": {

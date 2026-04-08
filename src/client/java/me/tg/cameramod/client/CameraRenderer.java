@@ -7,13 +7,21 @@ import me.tg.cameramod.CameraEntity;
 import me.tg.cameramod.Cameramod;
 import me.tg.cameramod.SoftCam;
 import me.tg.cameramod.mixin.client.CameraAccessor;
+import me.tg.cameramod.mixin.client.GameRendererAccessor;
 import me.tg.cameramod.mixin.client.MinecraftClientAccessor;
+import me.tg.cameramod.mixin.client.WorldRendererAccessor;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gl.Framebuffer;
 import net.minecraft.client.gl.SimpleFramebuffer;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.hud.ChatHud;
+import net.minecraft.client.gui.render.GuiRenderer;
+import net.minecraft.client.gui.render.state.GuiRenderState;
 import net.minecraft.client.render.Camera;
+import net.minecraft.client.render.Frustum;
 import net.minecraft.client.render.GameRenderer;
 import net.minecraft.client.render.RenderTickCounter;
+import net.minecraft.client.render.fog.FogRenderer;
 import net.minecraft.client.option.Perspective;
 import net.minecraft.client.texture.NativeImage;
 import net.minecraft.entity.Entity;
@@ -96,14 +104,19 @@ public class CameraRenderer {
 
     public static void onFrameRendered(GameRenderer gameRenderer, RenderTickCounter tickCounter) {
         if (rendering) return;
+        if (!SoftCam.isInitialized() || Cameramod.softcamCamera == null) return;
 
         MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.world == null || mc.player == null) return;
-        if (!SoftCam.isInitialized() || Cameramod.softcamCamera == null) return;
-        if (CameramodClient.isCamera) return;
 
         frameCounter++;
         if (frameCounter % CAPTURE_INTERVAL != 0) return;
+
+        // When not in a world (main menu, loading, etc.), send the off image
+        if (mc.world == null || mc.player == null) {
+            sendOffImage();
+            return;
+        }
+        if (CameramodClient.isCamera) return;
 
         Entity camera = getActiveCamera(mc);
         if (camera == null) {
@@ -124,6 +137,10 @@ public class CameraRenderer {
         float savedCameraY = camAccessor.cameramod$getCameraY();
         float savedLastCameraY = camAccessor.cameramod$getLastCameraY();
 
+        // Save the player's frustum so the camera pass doesn't corrupt entity culling
+        WorldRendererAccessor wrAccessor = (WorldRendererAccessor) mc.worldRenderer;
+        Frustum savedFrustum = wrAccessor.cameramod$getFrustum();
+
         try {
             int w = Cameramod.camwidth;
             int h = Cameramod.camheight;
@@ -142,6 +159,11 @@ public class CameraRenderer {
 
             gameRenderer.renderWorld(tickCounter);
 
+            // Render chat overlay into the offscreen FBO if cameraSeesChat is enabled
+            if (getGameruleBool(mc, Cameramod.CAMERA_SEES_CHAT)) {
+                renderChatOverlay(mc, gameRenderer, w, h);
+            }
+
             // Check cameraFlipped gamerule via integrated server (or default false)
             boolean flipped = getGameruleBool(mc, Cameramod.CAMERA_FLIPPED);
             captureFramebuffer(offscreenFbo, w, h, flipped);
@@ -155,6 +177,9 @@ public class CameraRenderer {
 
             camAccessor.cameramod$setCameraY(savedCameraY);
             camAccessor.cameramod$setLastCameraY(savedLastCameraY);
+
+            // Restore the player's frustum so entity culling isn't corrupted
+            wrAccessor.cameramod$setFrustum(savedFrustum);
 
             Entity playerEntity = savedCameraEntity != null ? savedCameraEntity : mc.player;
             float tickProgress = tickCounter.getTickProgress(false);
@@ -183,6 +208,31 @@ public class CameraRenderer {
             }
         }
         return null;
+    }
+
+    private static void renderChatOverlay(MinecraftClient mc, GameRenderer gameRenderer, int fbWidth, int fbHeight) {
+        try {
+            GameRendererAccessor grAccessor = (GameRendererAccessor) gameRenderer;
+            GuiRenderState guiState = grAccessor.cameramod$getGuiState();
+            GuiRenderer guiRenderer = grAccessor.cameramod$getGuiRenderer();
+            FogRenderer fogRenderer = grAccessor.cameramod$getFogRenderer();
+
+            // Clear GUI state and create fresh DrawContext
+            guiState.clear();
+            DrawContext drawContext = new DrawContext(mc, guiState);
+
+            // Render chat into the GUI state
+            float scaleFactor = (float) mc.getWindow().getScaleFactor();
+            int scaledWidth = (int) (fbWidth / scaleFactor);
+            int scaledHeight = (int) (fbHeight / scaleFactor);
+            ChatHud chatHud = mc.inGameHud.getChatHud();
+            chatHud.render(drawContext, mc.inGameHud.getTicks(), scaledWidth / 2, scaledHeight, false);
+
+            // Flush accumulated GUI draws to the currently bound FBO (our offscreen FBO)
+            guiRenderer.render(fogRenderer.getFogBuffer(FogRenderer.FogType.NONE));
+        } catch (Exception e) {
+            Cameramod.LOGGER.error("Failed to render chat overlay for camera", e);
+        }
     }
 
     private static void captureFramebuffer(Framebuffer framebuffer, int width, int height, boolean flipped) {
