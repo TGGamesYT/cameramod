@@ -61,6 +61,65 @@ copy /y softcam\examples\softcam_installer\x64\Release\softcam_installer.exe src
 copy /y softcam\src\softcam\Win32\Release\softcam.dll src\main\resources\natives\windows-x86\
 copy /y softcam\examples\softcam_installer\x64\Release\softcam_installer.exe src\main\resources\natives\windows-x86\
 
+:: ==============================
+:: Generate uninstall_camera.bat
+:: ==============================
+echo Generating uninstall_camera.bat...
+
+> src\main\resources\natives\uninstall_camera.bat (
+echo @echo off
+echo REM Uninstalls the Minecraft Virtualcam COM driver and cleans up
+echo REM Run this script as Administrator if unregister fails.
+echo setlocal
+echo.
+echo set "DIR=%%~dp0"
+echo set "DLL=%%DIR%%softcam.dll"
+echo set "INSTALLER=%%DIR%%softcam_installer.exe"
+echo set "MARKER=%%DIR%%.softcam_registered"
+echo.
+echo echo Minecraft Virtualcam Uninstaller
+echo echo =================================
+echo echo.
+echo.
+echo if exist "%%INSTALLER%%" ^(
+echo     echo Unregistering COM driver...
+echo     "%%INSTALLER%%" unregister "%%DLL%%"
+echo     if %%errorlevel%% neq 0 ^(
+echo         echo WARNING: Installer unregister failed, trying regsvr32...
+echo         regsvr32 /u /s "%%DLL%%"
+echo     ^)
+echo ^) else ^(
+echo     echo Installer not found, trying regsvr32...
+echo     regsvr32 /u /s "%%DLL%%"
+echo ^)
+echo.
+echo echo.
+echo.
+echo if exist "%%MARKER%%" ^(
+echo     del /f "%%MARKER%%" 2^>nul
+echo     echo Deleted registration marker.
+echo ^)
+echo.
+echo if exist "%%DLL%%" ^(
+echo     del /f "%%DLL%%" 2^>nul
+echo     if exist "%%DLL%%" ^(
+echo         echo WARNING: Could not delete softcam.dll - it may still be in use.
+echo     ^) else ^(
+echo         echo Deleted softcam.dll
+echo     ^)
+echo ^)
+echo.
+echo if exist "%%INSTALLER%%" ^(
+echo     del /f "%%INSTALLER%%" 2^>nul
+echo     echo Deleted softcam_installer.exe
+echo ^)
+echo.
+echo echo.
+echo echo Uninstall complete.
+echo echo You can delete this folder: %%DIR%%
+echo pause
+)
+
 echo ==============================
 echo BUILD SUCCESS
 echo ==============================

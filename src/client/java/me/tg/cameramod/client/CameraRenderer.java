@@ -6,10 +6,8 @@ import com.mojang.blaze3d.buffers.GpuBuffer;
 import me.tg.cameramod.CameraEntity;
 import me.tg.cameramod.Cameramod;
 import me.tg.cameramod.SoftCam;
-import me.tg.cameramod.mixin.client.CameraAccessor;
 import me.tg.cameramod.mixin.client.GameRendererAccessor;
 import me.tg.cameramod.mixin.client.MinecraftClientAccessor;
-import me.tg.cameramod.mixin.client.WorldRendererAccessor;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gl.Framebuffer;
 import net.minecraft.client.gl.SimpleFramebuffer;
@@ -18,7 +16,6 @@ import net.minecraft.client.gui.hud.ChatHud;
 import net.minecraft.client.gui.render.GuiRenderer;
 import net.minecraft.client.gui.render.state.GuiRenderState;
 import net.minecraft.client.render.Camera;
-import net.minecraft.client.render.Frustum;
 import net.minecraft.client.render.GameRenderer;
 import net.minecraft.client.render.RenderTickCounter;
 import net.minecraft.client.render.fog.FogRenderer;
@@ -29,9 +26,14 @@ import net.minecraft.util.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.GameRules;
 
+import java.io.BufferedReader;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.UUID;
 
 public class CameraRenderer {
@@ -40,31 +42,30 @@ public class CameraRenderer {
 
     private static SimpleFramebuffer offscreenFbo;
     private static byte[] frameBytes;
-    private static byte[] offImageFrame;
     private static int frameCounter = 0;
     private static boolean rendering = false;
+
+    // Off image animation state
+    private static List<byte[]> offImageFrames;  // null = not loaded yet
+    private static boolean offImageLoaded = false;
+    private static int offImageFps = 20;          // default fps
+    private static int offImageCurrentFrame = 0;
+    private static long offImageLastFrameTime = 0;
 
     public static boolean isRendering() {
         return rendering;
     }
 
-    private static void ensureOffImage() {
-        if (offImageFrame != null) return;
-        if (!SoftCam.isInitialized() || Cameramod.softcamCamera == null) return;
-
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.getResourceManager() == null) return;
-
+    private static byte[] loadImageToBGR(MinecraftClient mc, Identifier textureId) {
         try {
-            Identifier offTextureId = Identifier.of(Cameramod.MOD_ID, "textures/gui/off.png");
-            var resource = mc.getResourceManager().getResource(offTextureId);
-            if (resource.isEmpty()) return;
+            var resource = mc.getResourceManager().getResource(textureId);
+            if (resource.isEmpty()) return null;
 
             try (InputStream is = resource.get().getInputStream();
                  NativeImage image = NativeImage.read(is)) {
                 int w = Cameramod.camwidth;
                 int h = Cameramod.camheight;
-                offImageFrame = new byte[w * h * 3];
+                byte[] frame = new byte[w * h * 3];
 
                 for (int y = 0; y < h; y++) {
                     for (int x = 0; x < w; x++) {
@@ -72,22 +73,100 @@ public class CameraRenderer {
                         int srcY = y * image.getHeight() / h;
                         int color = image.getColorArgb(srcX, srcY);
                         int di = (y * w + x) * 3;
-                        offImageFrame[di]     = (byte) (color & 0xFF);         // B
-                        offImageFrame[di + 1] = (byte) ((color >> 8) & 0xFF);  // G
-                        offImageFrame[di + 2] = (byte) ((color >> 16) & 0xFF); // R
+                        frame[di]     = (byte) (color & 0xFF);         // B
+                        frame[di + 1] = (byte) ((color >> 8) & 0xFF);  // G
+                        frame[di + 2] = (byte) ((color >> 16) & 0xFF); // R
                     }
                 }
+                return frame;
             }
         } catch (Exception e) {
-            Cameramod.LOGGER.error("Failed to load off image", e);
+            return null;
+        }
+    }
+
+    private static int readIntResource(MinecraftClient mc, Identifier id, int defaultValue) {
+        try {
+            var resource = mc.getResourceManager().getResource(id);
+            if (resource.isEmpty()) return defaultValue;
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(resource.get().getInputStream(), StandardCharsets.UTF_8))) {
+                return Integer.parseInt(reader.readLine().trim());
+            }
+        } catch (Exception e) {
+            return defaultValue;
+        }
+    }
+
+    private static void ensureOffImage() {
+        if (offImageLoaded) return;
+        if (!SoftCam.isInitialized() || Cameramod.softcamCamera == null) return;
+
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.getResourceManager() == null) return;
+
+        offImageLoaded = true;
+
+        // Check for animated off image: off.count defines frame count
+        Identifier countId = Identifier.of(Cameramod.MOD_ID, "textures/gui/off.count");
+        int count = readIntResource(mc, countId, -1);
+
+        if (count > 0) {
+            // Load animation frames: off_0.png .. off_(count-1).png
+            Identifier fpsId = Identifier.of(Cameramod.MOD_ID, "textures/gui/off.fps");
+            offImageFps = readIntResource(mc, fpsId, 20);
+            if (offImageFps < 1) offImageFps = 1;
+
+            offImageFrames = new ArrayList<>();
+            for (int i = 0; i < count; i++) {
+                Identifier frameId = Identifier.of(Cameramod.MOD_ID, "textures/gui/off_" + i + ".png");
+                byte[] frame = loadImageToBGR(mc, frameId);
+                if (frame != null) {
+                    offImageFrames.add(frame);
+                } else {
+                    Cameramod.LOGGER.warn("Missing off image frame: off_{}.png", i);
+                }
+            }
+
+            if (offImageFrames.isEmpty()) {
+                Cameramod.LOGGER.error("off.count={} but no off_N.png frames found, falling back to off.png", count);
+                offImageFrames = null;
+            } else {
+                Cameramod.LOGGER.info("Loaded {} off image frames at {} fps", offImageFrames.size(), offImageFps);
+            }
+        }
+
+        // If no animation, load the static off.png
+        if (offImageFrames == null) {
+            Identifier offTextureId = Identifier.of(Cameramod.MOD_ID, "textures/gui/off.png");
+            byte[] frame = loadImageToBGR(mc, offTextureId);
+            if (frame != null) {
+                offImageFrames = new ArrayList<>();
+                offImageFrames.add(frame);
+                offImageFps = 1; // static, doesn't matter
+            } else {
+                Cameramod.LOGGER.error("Failed to load off.png");
+            }
         }
     }
 
     private static void sendOffImage() {
         if (!SoftCam.isInitialized() || Cameramod.softcamCamera == null) return;
         ensureOffImage();
-        if (offImageFrame != null) {
-            SoftCam.sendFrame(Cameramod.softcamCamera, offImageFrame);
+        if (offImageFrames == null || offImageFrames.isEmpty()) return;
+
+        if (offImageFrames.size() == 1) {
+            // Static image
+            SoftCam.sendFrame(Cameramod.softcamCamera, offImageFrames.get(0));
+        } else {
+            // Animated: advance frame based on time and fps
+            long now = System.currentTimeMillis();
+            long msPerFrame = 1000L / offImageFps;
+            if (now - offImageLastFrameTime >= msPerFrame) {
+                offImageLastFrameTime = now;
+                offImageCurrentFrame = (offImageCurrentFrame + 1) % offImageFrames.size();
+            }
+            SoftCam.sendFrame(Cameramod.softcamCamera, offImageFrames.get(offImageCurrentFrame));
         }
     }
 
@@ -127,19 +206,14 @@ public class CameraRenderer {
         rendering = true;
 
         // --- save state ---
+        // Only save/restore what the camera pass changes directly.
+        // No need to restore frustum, fog, lightmap etc. because the camera pass
+        // runs BEFORE the player render (HEAD of render()), so the player's
+        // renderWorld() overwrites all that state afterward.
         Entity savedCameraEntity = mc.getCameraEntity();
         MinecraftClientAccessor accessor = (MinecraftClientAccessor) mc;
         Framebuffer mainFbo = accessor.cameramod$getFramebuffer();
         Perspective savedPerspective = mc.options.getPerspective();
-
-        Camera cam = gameRenderer.getCamera();
-        CameraAccessor camAccessor = (CameraAccessor) cam;
-        float savedCameraY = camAccessor.cameramod$getCameraY();
-        float savedLastCameraY = camAccessor.cameramod$getLastCameraY();
-
-        // Save the player's frustum so the camera pass doesn't corrupt entity culling
-        WorldRendererAccessor wrAccessor = (WorldRendererAccessor) mc.worldRenderer;
-        Frustum savedFrustum = wrAccessor.cameramod$getFrustum();
 
         try {
             int w = Cameramod.camwidth;
@@ -150,11 +224,6 @@ public class CameraRenderer {
 
             accessor.cameramod$setFramebuffer(offscreenFbo);
             mc.options.setPerspective(Perspective.FIRST_PERSON);
-
-            float cameraEntityEyeHeight = camera.getStandingEyeHeight();
-            camAccessor.cameramod$setCameraY(cameraEntityEyeHeight);
-            camAccessor.cameramod$setLastCameraY(cameraEntityEyeHeight);
-
             mc.setCameraEntity(camera);
 
             gameRenderer.renderWorld(tickCounter);
@@ -174,18 +243,6 @@ public class CameraRenderer {
             accessor.cameramod$setFramebuffer(mainFbo);
             mc.setCameraEntity(savedCameraEntity);
             mc.options.setPerspective(savedPerspective);
-
-            camAccessor.cameramod$setCameraY(savedCameraY);
-            camAccessor.cameramod$setLastCameraY(savedLastCameraY);
-
-            // Restore the player's frustum so entity culling isn't corrupted
-            wrAccessor.cameramod$setFrustum(savedFrustum);
-
-            Entity playerEntity = savedCameraEntity != null ? savedCameraEntity : mc.player;
-            float tickProgress = tickCounter.getTickProgress(false);
-            boolean thirdPerson = !savedPerspective.isFirstPerson();
-            boolean frontView = savedPerspective.isFrontView();
-            cam.update(mc.world, playerEntity, thirdPerson, frontView, tickProgress);
 
             rendering = false;
         }

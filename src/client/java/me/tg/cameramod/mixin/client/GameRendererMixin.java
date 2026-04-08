@@ -16,8 +16,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(GameRenderer.class)
 public class GameRendererMixin {
 
-    @Inject(method = "render", at = @At("TAIL"))
-    private void cameramod$afterRender(RenderTickCounter tickCounter, boolean tick, CallbackInfo ci) {
+    // Render camera pass BEFORE the player render so the player's renderWorld()
+    // overwrites all state (frustum, fog, lightmap, chunks, etc.), preventing
+    // entity jitter and sky/cloud glitches in the player's view.
+    @Inject(method = "render", at = @At("HEAD"))
+    private void cameramod$beforeRender(RenderTickCounter tickCounter, boolean tick, CallbackInfo ci) {
         CameraRenderer.onFrameRendered((GameRenderer) (Object) this, tickCounter);
     }
 

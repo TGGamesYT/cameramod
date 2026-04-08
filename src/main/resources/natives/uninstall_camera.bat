@@ -1,8 +1,6 @@
 @echo off
-REM ============================================================
-REM  Uninstalls the Minecraft Virtualcam COM driver and cleans up
-REM  Run this script as Administrator if unregister fails.
-REM ============================================================
+REM Uninstalls the Minecraft Virtualcam COM driver and cleans up
+REM Run this script as Administrator if unregister fails.
 setlocal
 
 set "DIR=%~dp0"
@@ -14,7 +12,6 @@ echo Minecraft Virtualcam Uninstaller
 echo =================================
 echo.
 
-REM Try to unregister using the installer
 if exist "%INSTALLER%" (
     echo Unregistering COM driver...
     "%INSTALLER%" unregister "%DLL%"
@@ -29,24 +26,20 @@ if exist "%INSTALLER%" (
 
 echo.
 
-REM Delete the marker
 if exist "%MARKER%" (
     del /f "%MARKER%" 2>nul
     echo Deleted registration marker.
 )
 
-REM Try to delete the DLL
 if exist "%DLL%" (
     del /f "%DLL%" 2>nul
     if exist "%DLL%" (
         echo WARNING: Could not delete softcam.dll - it may still be in use.
-        echo          Close all applications using "Minecraft Virtualcam" and try again.
     ) else (
         echo Deleted softcam.dll
     )
 )
 
-REM Delete installer
 if exist "%INSTALLER%" (
     del /f "%INSTALLER%" 2>nul
     echo Deleted softcam_installer.exe
