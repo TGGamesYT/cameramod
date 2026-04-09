@@ -6,6 +6,7 @@ import com.mojang.blaze3d.buffers.GpuBuffer;
 import me.tg.cameramod.CameraEntity;
 import me.tg.cameramod.Cameramod;
 import me.tg.cameramod.SoftCam;
+import me.tg.cameramod.mixin.client.CameraAccessor;
 import me.tg.cameramod.mixin.client.GameRendererAccessor;
 import me.tg.cameramod.mixin.client.MinecraftClientAccessor;
 import net.minecraft.client.MinecraftClient;
@@ -42,18 +43,29 @@ public class CameraRenderer {
 
     private static SimpleFramebuffer offscreenFbo;
     private static byte[] frameBytes;
+
+    // Saved Camera cameraY/lastCameraY for the camera entity pass —
+    // prevents the player's sneak bob from leaking into the camera view.
+    private static float savedCamCameraY = Float.NaN;
+    private static float savedCamLastCameraY = Float.NaN;
     private static int frameCounter = 0;
     private static boolean rendering = false;
+
+    // Active camera zoom level (set during render pass for FOV override)
+    private static float activeZoomLevel = 1.0f;
 
     // Off image animation state
     private static List<byte[]> offImageFrames;  // null = not loaded yet
     private static boolean offImageLoaded = false;
     private static int offImageFps = 20;          // default fps
-    private static int offImageCurrentFrame = 0;
-    private static long offImageLastFrameTime = 0;
+    private static double offImageFrameAccumulator = 0; // fractional animation frame position
 
     public static boolean isRendering() {
         return rendering;
+    }
+
+    public static float getActiveZoomLevel() {
+        return activeZoomLevel;
     }
 
     private static byte[] loadImageToBGR(MinecraftClient mc, Identifier textureId) {
@@ -159,14 +171,18 @@ public class CameraRenderer {
             // Static image
             SoftCam.sendFrame(Cameramod.softcamCamera, offImageFrames.get(0));
         } else {
-            // Animated: advance frame based on time and fps
-            long now = System.currentTimeMillis();
-            long msPerFrame = 1000L / offImageFps;
-            if (now - offImageLastFrameTime >= msPerFrame) {
-                offImageLastFrameTime = now;
-                offImageCurrentFrame = (offImageCurrentFrame + 1) % offImageFrames.size();
+            // Animated: advance by (offImageFps / camframerate) animation frames
+            // per softcam frame send, so the animation plays at the correct speed
+            // regardless of the softcam's stream rate.
+            // e.g. offImageFps=10, camframerate=20 → advance 0.5 frames per send
+            // e.g. offImageFps=30, camframerate=20 → advance 1.5 frames per send
+            int frameIndex = ((int) offImageFrameAccumulator) % offImageFrames.size();
+            SoftCam.sendFrame(Cameramod.softcamCamera, offImageFrames.get(frameIndex));
+            offImageFrameAccumulator += (double) offImageFps / Cameramod.camframerate;
+            // Wrap to prevent overflow
+            if (offImageFrameAccumulator >= offImageFrames.size()) {
+                offImageFrameAccumulator -= offImageFrames.size() * Math.floor(offImageFrameAccumulator / offImageFrames.size());
             }
-            SoftCam.sendFrame(Cameramod.softcamCamera, offImageFrames.get(offImageCurrentFrame));
         }
     }
 
@@ -203,6 +219,13 @@ public class CameraRenderer {
             return;
         }
 
+        // Set zoom level for FOV override
+        if (camera instanceof CameraEntity ce) {
+            activeZoomLevel = ce.getZoomLevel();
+        } else {
+            activeZoomLevel = 1.0f;
+        }
+
         rendering = true;
 
         // --- save state ---
@@ -226,7 +249,25 @@ public class CameraRenderer {
             mc.options.setPerspective(Perspective.FIRST_PERSON);
             mc.setCameraEntity(camera);
 
+            // Save the player's cameraY / lastCameraY and restore the camera's
+            // saved values.  This prevents the player's sneak eye-height offset
+            // from leaking into the camera view.
+            CameraAccessor camAccessor = (CameraAccessor) mc.gameRenderer.getCamera();
+            float playerCameraY = camAccessor.cameramod$getCameraY();
+            float playerLastCameraY = camAccessor.cameramod$getLastCameraY();
+            if (!Float.isNaN(savedCamCameraY)) {
+                camAccessor.cameramod$setCameraY(savedCamCameraY);
+                camAccessor.cameramod$setLastCameraY(savedCamLastCameraY);
+            }
+
             gameRenderer.renderWorld(tickCounter);
+
+            // Save camera's cameraY state for next frame
+            savedCamCameraY = camAccessor.cameramod$getCameraY();
+            savedCamLastCameraY = camAccessor.cameramod$getLastCameraY();
+            // Restore the player's cameraY
+            camAccessor.cameramod$setCameraY(playerCameraY);
+            camAccessor.cameramod$setLastCameraY(playerLastCameraY);
 
             // Render chat overlay into the offscreen FBO if cameraSeesChat is enabled
             if (getGameruleBool(mc, Cameramod.CAMERA_SEES_CHAT)) {

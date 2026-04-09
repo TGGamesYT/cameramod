@@ -47,7 +47,10 @@ public class GameRendererMixin {
     @Inject(method = "getFov", at = @At("HEAD"), cancellable = true)
     private void cameramod$fixedCameraFov(Camera camera, float tickProgress, boolean changingFov, CallbackInfoReturnable<Float> cir) {
         if (CameraRenderer.isRendering()) {
-            cir.setReturnValue((float) MinecraftClient.getInstance().options.getFov().getValue().intValue());
+            float baseFov = (float) MinecraftClient.getInstance().options.getFov().getValue().intValue();
+            float zoom = CameraRenderer.getActiveZoomLevel();
+            if (zoom > 0.0f) baseFov /= zoom;
+            cir.setReturnValue(baseFov);
         }
     }
 

@@ -62,7 +62,9 @@ public class ServerItems {
     public static final HashMap<UUID, Double> CAMERA_MOVER_DISTANCE = new HashMap<>();
     public static final HashMap<UUID, Boolean> CAMERA_MOVER_ACTIVENESS = new HashMap<>();
     public static final HashMap<UUID, UUID> CAMERA_MOVER_UUIDS = new HashMap<>();
-    public static final HashMap<UUID, UUID> CAMERA_FIXER_TRACKING = new HashMap<>();
+
+    // Fixer: player UUID → selected camera UUID (for the two-step shift+click workflow)
+    public static final HashMap<UUID, UUID> CAMERA_FIXER_SELECTION = new HashMap<>();
 
     public static void registerItems() {
         Registry.register(Registries.ITEM, camera_item_key, CAMERA_ITEM);
@@ -158,7 +160,6 @@ public class ServerItems {
     }
 
     // ==================== Camera Activator ====================
-    // Right-click a camera entity to bind it to you for /setcamera
     public static class CameraActivatorItem extends Item {
         public CameraActivatorItem(Settings settings) {
             super(settings);
@@ -183,7 +184,6 @@ public class ServerItems {
 
             if (entity instanceof CameraEntity) {
                 CAMERA_COMMAND_STORAGE.put(user.getUuid(), entity.getUuid());
-                // Sync to client so CameraRenderer knows which camera to render
                 if (user instanceof ServerPlayerEntity serverPlayer) {
                     ServerPlayNetworking.send(serverPlayer,
                             new CameraServerThing.BindCameraS2CPayload(entity.getUuid()));
@@ -197,8 +197,6 @@ public class ServerItems {
     }
 
     // ==================== Camera Orienter ====================
-    // Right-click to point your bound camera in your look direction
-    // Or right-click a camera entity directly to orient that one
     public static class CameraOrienterItem extends Item {
         public CameraOrienterItem(Settings settings) {
             super(settings);
@@ -235,7 +233,6 @@ public class ServerItems {
         public ActionResult use(World world, PlayerEntity player, Hand hand) {
             if (world.isClient || player == null) return ActionResult.SUCCESS;
 
-            // Orient the bound camera
             UUID camUuid = CAMERA_COMMAND_STORAGE.get(player.getUuid());
             if (camUuid == null) {
                 player.sendMessage(Text.literal("No camera bound. Use Camera Activator first."), true);
@@ -260,7 +257,6 @@ public class ServerItems {
     }
 
     // ==================== Camera Mover ====================
-    // Right-click a camera to make it follow you at a fixed distance; click air to stop
     public static class CameraMoverItem extends Item {
         public CameraMoverItem(Settings settings) {
             super(settings);
@@ -323,7 +319,8 @@ public class ServerItems {
     }
 
     // ==================== Camera Fixer ====================
-    // Right-click a camera to make it continuously face you; click again to stop
+    // Shift+click a camera to select it, then click any entity to fix the camera to it.
+    // Click a camera normally to un-fix it. Click air to check status.
     public static class CameraFixerItem extends Item {
         public CameraFixerItem(Settings settings) {
             super(settings);
@@ -348,34 +345,61 @@ public class ServerItems {
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
             if (user.getWorld().isClient) return ActionResult.SUCCESS;
 
-            if (entity instanceof CameraEntity) {
-                UUID cameraId = entity.getUuid();
-                if (CAMERA_FIXER_TRACKING.containsKey(cameraId)) {
-                    CAMERA_FIXER_TRACKING.remove(cameraId);
-                    user.sendMessage(Text.literal("Camera tracking disabled"), true);
+            UUID userId = user.getUuid();
+
+            if (entity instanceof CameraEntity cam) {
+                if (user.isSneaking()) {
+                    // Shift+click camera → select it for fixing
+                    CAMERA_FIXER_SELECTION.put(userId, cam.getUuid());
+                    user.sendMessage(Text.literal("Camera selected. Now click an entity to fix the camera to it."), true);
+                    return ActionResult.SUCCESS;
                 } else {
-                    CAMERA_FIXER_TRACKING.put(cameraId, user.getUuid());
-                    user.sendMessage(Text.literal("Camera now tracks you"), true);
+                    // Normal click camera → toggle tracking the player
+                    if (cam.getFixedTargetUuid() != null && cam.getFixedTargetUuid().equals(user.getUuid())) {
+                        cam.setFixedTargetUuid(null);
+                        user.sendMessage(Text.literal("Camera tracking disabled"), true);
+                    } else {
+                        cam.setFixedTargetUuid(user.getUuid());
+                        user.sendMessage(Text.literal("Camera now tracks you"), true);
+                    }
+                    return ActionResult.SUCCESS;
                 }
-                return ActionResult.SUCCESS;
             }
+
+            // Clicked a non-camera entity — check if we have a selected camera
+            UUID selectedCamUuid = CAMERA_FIXER_SELECTION.get(userId);
+            if (selectedCamUuid != null) {
+                ServerWorld world = (ServerWorld) user.getWorld();
+                Entity camEntity = world.getEntity(selectedCamUuid);
+                if (camEntity instanceof CameraEntity cam) {
+                    cam.setFixedTargetUuid(entity.getUuid());
+                    CAMERA_FIXER_SELECTION.remove(userId);
+                    user.sendMessage(Text.literal("Camera now tracks " + entity.getName().getString()), true);
+                    return ActionResult.SUCCESS;
+                } else {
+                    CAMERA_FIXER_SELECTION.remove(userId);
+                    user.sendMessage(Text.literal("Selected camera no longer exists"), true);
+                }
+            }
+
             return ActionResult.PASS;
         }
 
         @Override
         public ActionResult use(World world, PlayerEntity user, Hand hand) {
-            // Show status: how many cameras are tracking you
             if (world.isClient) return ActionResult.SUCCESS;
 
-            long count = CAMERA_FIXER_TRACKING.values().stream()
-                    .filter(id -> id.equals(user.getUuid()))
-                    .count();
+            UUID userId = user.getUuid();
 
-            if (count > 0) {
-                user.sendMessage(Text.literal(count + " camera(s) tracking you"), true);
-            } else {
-                user.sendMessage(Text.literal("No cameras tracking you"), true);
+            // If we have a selection pending, clear it
+            if (CAMERA_FIXER_SELECTION.containsKey(userId)) {
+                CAMERA_FIXER_SELECTION.remove(userId);
+                user.sendMessage(Text.literal("Camera selection cleared"), true);
+                return ActionResult.SUCCESS;
             }
+
+            // Show status
+            user.sendMessage(Text.literal("Shift+click a camera to select, then click an entity to fix"), true);
             return ActionResult.SUCCESS;
         }
     }
@@ -405,39 +429,28 @@ public class ServerItems {
             camera.requestTeleport(target.x, target.y, target.z);
         }
 
-        // Camera Fixer: rotate cameras to face their tracked players
-        Iterator<Map.Entry<UUID, UUID>> it = CAMERA_FIXER_TRACKING.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<UUID, UUID> entry = it.next();
-            UUID cameraId = entry.getKey();
-            UUID playerId = entry.getValue();
+        // Camera Fixer: rotate cameras to face their fixedTarget (stored on entity)
+        for (ServerWorld world : server.getWorlds()) {
+            for (Entity entity : world.iterateEntities()) {
+                if (!(entity instanceof CameraEntity cam)) continue;
+                UUID targetUuid = cam.getFixedTargetUuid();
+                if (targetUuid == null) continue;
 
-            ServerPlayerEntity player = server.getPlayerManager().getPlayer(playerId);
-            if (player == null) {
-                it.remove();
-                continue;
-            }
+                Entity target = world.getEntity(targetUuid);
+                if (target == null) continue;
 
-            ServerWorld world = (ServerWorld) player.getWorld();
-            Entity camera = world.getEntity(cameraId);
-            if (camera == null) {
-                it.remove();
-                continue;
-            }
+                double dx = target.getX() - cam.getX();
+                double dy = target.getEyeY() - cam.getEyeY();
+                double dz = target.getZ() - cam.getZ();
+                double horizontal = Math.sqrt(dx * dx + dz * dz);
 
-            double dx = player.getX() - camera.getX();
-            double dy = player.getEyeY() - camera.getEyeY();
-            double dz = player.getZ() - camera.getZ();
-            double horizontal = Math.sqrt(dx * dx + dz * dz);
+                float yaw = (float) (Math.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0f;
+                float pitch = (float) (-(Math.atan2(dy, horizontal) * (180.0 / Math.PI)));
 
-            float yaw = (float) (Math.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0f;
-            float pitch = (float) (-(Math.atan2(dy, horizontal) * (180.0 / Math.PI)));
-
-            camera.setYaw(yaw);
-            camera.setPitch(pitch);
-            if (camera instanceof LivingEntity le) {
-                le.setHeadYaw(yaw);
-                le.setBodyYaw(yaw);
+                cam.setYaw(yaw);
+                cam.setPitch(pitch);
+                cam.setHeadYaw(yaw);
+                cam.setBodyYaw(yaw);
             }
         }
     }

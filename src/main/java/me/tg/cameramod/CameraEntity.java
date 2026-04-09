@@ -12,7 +12,13 @@ import net.minecraft.storage.WriteView;
 import net.minecraft.util.Arm;
 import net.minecraft.world.World;
 
+import java.util.Optional;
+import java.util.UUID;
+
 public class CameraEntity extends LivingEntity {
+
+    // UUID of the entity this camera is fixed to look at (persisted in NBT)
+    private UUID fixedTargetUuid = null;
 
     public static DefaultAttributeContainer.Builder createCameraAttributes() {
         return LivingEntity.createLivingAttributes()
@@ -23,6 +29,18 @@ public class CameraEntity extends LivingEntity {
     public CameraEntity(EntityType<? extends LivingEntity> type, World world) {
         super(type, world);
         this.setNoGravity(true);
+    }
+
+    public UUID getFixedTargetUuid() {
+        return fixedTargetUuid;
+    }
+
+    public void setFixedTargetUuid(UUID uuid) {
+        this.fixedTargetUuid = uuid;
+    }
+
+    public float getZoomLevel() {
+        return 1.0f;
     }
 
     @Override
@@ -54,10 +72,23 @@ public class CameraEntity extends LivingEntity {
     }
 
     @Override
-    protected void readCustomData(ReadView view) {}
+    protected void readCustomData(ReadView view) {
+        Optional<String> targetStr = view.getOptionalString("FixedTarget");
+        targetStr.ifPresent(s -> {
+            try {
+                this.fixedTargetUuid = UUID.fromString(s);
+            } catch (IllegalArgumentException e) {
+                this.fixedTargetUuid = null;
+            }
+        });
+    }
 
     @Override
-    protected void writeCustomData(WriteView view) {}
+    protected void writeCustomData(WriteView view) {
+        if (fixedTargetUuid != null) {
+            view.putString("FixedTarget", fixedTargetUuid.toString());
+        }
+    }
 
     @Override
     protected void initDataTracker(DataTracker.Builder builder) {

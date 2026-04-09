@@ -19,7 +19,7 @@
   "item.cameramod.camera_mover.tooltip.3": "Right-click air to stop.",
 
   "item.cameramod.camera_fixer": "Camera Fixer",
-  "item.cameramod.camera_fixer.tooltip.1": "Locks a camera onto you.",
-  "item.cameramod.camera_fixer.tooltip.2": "Right-click a camera to toggle.",
-  "item.cameramod.camera_fixer.tooltip.3": "Right-click air to check status."
+  "item.cameramod.camera_fixer.tooltip.1": "Locks a camera onto an entity.",
+  "item.cameramod.camera_fixer.tooltip.2": "Shift+click camera to select, then click entity.",
+  "item.cameramod.camera_fixer.tooltip.3": "Click a camera to un-fix it."
 }
