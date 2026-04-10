@@ -66,6 +66,12 @@ public class ServerItems {
     static RegistryKey<Item> camera_zoomer_key = RegistryKey.of(RegistryKeys.ITEM, Identifier.of(Cameramod.MOD_ID, "camera_zoomer"));
     public static final Item CAMERA_ZOOMER = new CameraZoomerItem(new Item.Settings().maxCount(1).registryKey(camera_zoomer_key));
 
+    static RegistryKey<Item> camera_gravity_key = RegistryKey.of(RegistryKeys.ITEM, Identifier.of(Cameramod.MOD_ID, "camera_gravity"));
+    public static final Item CAMERA_GRAVITY = new CameraGravityItem(new Item.Settings().maxCount(1).registryKey(camera_gravity_key));
+
+    static RegistryKey<Item> camera_attacher_key = RegistryKey.of(RegistryKeys.ITEM, Identifier.of(Cameramod.MOD_ID, "camera_attacher"));
+    public static final Item CAMERA_ATTACHER = new CameraAttacherItem(new Item.Settings().maxCount(1).registryKey(camera_attacher_key));
+
     // ---- Storage Maps ----
     public static final HashMap<UUID, UUID> CAMERA_COMMAND_STORAGE = new HashMap<>();
     public static final HashMap<UUID, Double> CAMERA_MOVER_DISTANCE = new HashMap<>();
@@ -94,6 +100,8 @@ public class ServerItems {
         Registry.register(Registries.ITEM, camera_orienter_key, CAMERA_ORIENTER);
         Registry.register(Registries.ITEM, camera_mover_key, CAMERA_MOVER);
         Registry.register(Registries.ITEM, camera_fixer_key, CAMERA_FIXER);
+        Registry.register(Registries.ITEM, camera_gravity_key, CAMERA_GRAVITY);
+        Registry.register(Registries.ITEM, camera_attacher_key, CAMERA_ATTACHER);
         Registry.register(Registries.ITEM, camera_zoomer_key, CAMERA_ZOOMER);
         ServerTickEvents.START_SERVER_TICK.register(ServerItems::onServerTick);
 
@@ -656,6 +664,21 @@ public class ServerItems {
                 return ActionResult.SUCCESS;
             }
 
+            // Click air: toggle fixer mode on bound camera
+            UUID camUuid = CAMERA_COMMAND_STORAGE.get(userId);
+            if (camUuid != null) {
+                ServerWorld sw = (ServerWorld) world;
+                Entity camEntity = sw.getEntity(camUuid);
+                if (camEntity instanceof CameraEntity cam) {
+                    byte mode = cam.getFixerMode();
+                    byte newMode = (byte) ((mode + 1) % 2);
+                    cam.setFixerMode(newMode);
+                    String modeName = newMode == 0 ? "Look At" : "Look Same Way";
+                    user.sendMessage(Text.literal("Fixer mode: " + modeName), true);
+                    return ActionResult.SUCCESS;
+                }
+            }
+
             user.sendMessage(Text.literal("Shift+click a camera to select, then click an entity to fix"), true);
             return ActionResult.SUCCESS;
         }
@@ -717,6 +740,140 @@ public class ServerItems {
         }
     }
 
+    // ==================== Camera Gravity ====================
+    public static class CameraGravityItem extends Item {
+        public CameraGravityItem(Settings settings) { super(settings); }
+
+        @Override
+        public void appendTooltip(ItemStack stack, TooltipContext context, TooltipDisplayComponent displayComponent,
+                                  Consumer<Text> textConsumer, TooltipType type) {
+            textConsumer.accept(Text.translatable("item.cameramod.camera_gravity.tooltip.1").formatted(Formatting.GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_gravity.tooltip.2").formatted(Formatting.DARK_GRAY));
+        }
+
+        @Override
+        public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
+            if (user.getWorld().isClient) return ActionResult.SUCCESS;
+            if (entity instanceof CameraEntity cam) {
+                toggleGravity(cam, user);
+                return ActionResult.SUCCESS;
+            }
+            return ActionResult.PASS;
+        }
+
+        @Override
+        public ActionResult use(World world, PlayerEntity user, Hand hand) {
+            if (world.isClient) return ActionResult.SUCCESS;
+            if (isCreative(user)) {
+                CameraEntity cam = raycastCamera(world, user, 20.0);
+                if (cam != null) {
+                    toggleGravity(cam, user);
+                    return ActionResult.SUCCESS;
+                }
+            }
+            return ActionResult.PASS;
+        }
+
+        private void toggleGravity(CameraEntity cam, PlayerEntity user) {
+            boolean newState = !cam.isGravityEnabled();
+            cam.setGravityEnabled(newState);
+            user.sendMessage(Text.literal("Camera gravity: " + (newState ? "ON" : "OFF")), true);
+        }
+    }
+
+    // ==================== Camera Attacher ====================
+    public static class CameraAttacherItem extends Item {
+        public CameraAttacherItem(Settings settings) { super(settings); }
+
+        @Override
+        public void appendTooltip(ItemStack stack, TooltipContext context, TooltipDisplayComponent displayComponent,
+                                  Consumer<Text> textConsumer, TooltipType type) {
+            textConsumer.accept(Text.translatable("item.cameramod.camera_attacher.tooltip.1").formatted(Formatting.GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_attacher.tooltip.2").formatted(Formatting.DARK_GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_attacher.tooltip.3").formatted(Formatting.DARK_GRAY));
+        }
+
+        @Override
+        public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
+            if (user.getWorld().isClient) return ActionResult.SUCCESS;
+            UUID userId = user.getUuid();
+
+            if (entity instanceof CameraEntity cam) {
+                // Click camera: select it for attachment, or detach if already attached
+                if (cam.getAttachTargetUuid() != null) {
+                    cam.setAttachTargetUuid(null);
+                    user.sendMessage(Text.literal("Camera detached"), true);
+                } else {
+                    CAMERA_FIXER_SELECTION.put(userId, cam.getUuid());
+                    user.sendMessage(Text.literal("Camera selected. Now click an entity to attach to."), true);
+                }
+                return ActionResult.SUCCESS;
+            }
+
+            // Click non-camera entity: attach selected camera to it
+            UUID selectedCamUuid = CAMERA_FIXER_SELECTION.get(userId);
+            if (selectedCamUuid != null) {
+                ServerWorld world = (ServerWorld) user.getWorld();
+                Entity camEntity = world.getEntity(selectedCamUuid);
+                if (camEntity instanceof CameraEntity cam) {
+                    Vec3d offset = cam.getPos().subtract(entity.getPos());
+                    cam.setAttachTargetUuid(entity.getUuid());
+                    cam.setAttachOffset(offset);
+                    CAMERA_FIXER_SELECTION.remove(userId);
+                    user.sendMessage(Text.literal("Camera attached to " + entity.getName().getString()), true);
+                    return ActionResult.SUCCESS;
+                }
+                CAMERA_FIXER_SELECTION.remove(userId);
+                user.sendMessage(Text.literal("Selected camera no longer exists"), true);
+            }
+
+            return ActionResult.PASS;
+        }
+
+        @Override
+        public ActionResult use(World world, PlayerEntity user, Hand hand) {
+            if (world.isClient) return ActionResult.SUCCESS;
+            UUID userId = user.getUuid();
+
+            Entity hit = raycastEntity(world, user, 20.0);
+
+            // Pending selection + non-camera entity hit: attach
+            UUID selectedCamUuid = CAMERA_FIXER_SELECTION.get(userId);
+            if (selectedCamUuid != null) {
+                if (hit != null && !(hit instanceof CameraEntity)) {
+                    ServerWorld sw = (ServerWorld) world;
+                    Entity camEntity = sw.getEntity(selectedCamUuid);
+                    if (camEntity instanceof CameraEntity cam) {
+                        Vec3d offset = cam.getPos().subtract(hit.getPos());
+                        cam.setAttachTargetUuid(hit.getUuid());
+                        cam.setAttachOffset(offset);
+                        CAMERA_FIXER_SELECTION.remove(userId);
+                        user.sendMessage(Text.literal("Camera attached to " + hit.getName().getString()), true);
+                        return ActionResult.SUCCESS;
+                    }
+                }
+                CAMERA_FIXER_SELECTION.remove(userId);
+                user.sendMessage(Text.literal("Selection cleared"), true);
+                return ActionResult.SUCCESS;
+            }
+
+            // Raycast camera: select or detach
+            if (hit instanceof CameraEntity cam) {
+                if (cam.getAttachTargetUuid() != null) {
+                    cam.setAttachTargetUuid(null);
+                    user.sendMessage(Text.literal("Camera detached"), true);
+                } else {
+                    CAMERA_FIXER_SELECTION.put(userId, cam.getUuid());
+                    user.sendMessage(Text.literal("Camera selected. Now click an entity to attach to."), true);
+                }
+                return ActionResult.SUCCESS;
+            }
+
+            user.sendMessage(Text.literal("Click a camera to select, then click an entity to attach"), true);
+            return ActionResult.SUCCESS;
+        }
+    }
+
     // ==================== Server Tick Handler ====================
     private static void onServerTick(MinecraftServer server) {
         // Sync gamerule changes to all players
@@ -754,30 +911,8 @@ public class ServerItems {
             camera.requestTeleport(target.x, target.y, target.z);
         }
 
-        // Camera Fixer: rotate cameras to face their fixedTarget (stored on entity)
-        for (ServerWorld world : server.getWorlds()) {
-            for (Entity entity : world.iterateEntities()) {
-                if (!(entity instanceof CameraEntity cam)) continue;
-                UUID targetUuid = cam.getFixedTargetUuid();
-                if (targetUuid == null) continue;
-
-                Entity target = world.getEntity(targetUuid);
-                if (target == null) continue;
-
-                double dx = target.getX() - cam.getX();
-                double dy = target.getEyeY() - cam.getEyeY();
-                double dz = target.getZ() - cam.getZ();
-                double horizontal = Math.sqrt(dx * dx + dz * dz);
-
-                float yaw = (float) (Math.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0f;
-                float pitch = (float) (-(Math.atan2(dy, horizontal) * (180.0 / Math.PI)));
-
-                cam.setYaw(yaw);
-                cam.setPitch(pitch);
-                cam.setHeadYaw(yaw);
-                cam.setBodyYaw(yaw);
-            }
-        }
+        // Camera Fixer rotation is handled client-side for smoothness
+        // (see CameramodClient WorldRenderEvents.START handler)
 
         // Force-load chunks around bound cameras
         for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {

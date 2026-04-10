@@ -82,6 +82,8 @@ public class Cameramod implements ModInitializer {
             itemGroup.add(ServerItems.CAMERA_MOVER);
             itemGroup.add(ServerItems.CAMERA_FIXER);
             itemGroup.add(ServerItems.CAMERA_ZOOMER);
+            itemGroup.add(ServerItems.CAMERA_GRAVITY);
+            itemGroup.add(ServerItems.CAMERA_ATTACHER);
         });
     }
 }

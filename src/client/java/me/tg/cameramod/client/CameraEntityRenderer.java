@@ -23,9 +23,9 @@ public class CameraEntityRenderer extends LivingEntityRenderer<CameraEntity, Cam
     public void updateRenderState(CameraEntity entity, CameraEntityRenderState state, float tickDelta) {
         super.updateRenderState(entity, state, tickDelta);
         state.zoomLevel = entity.getZoomLevel();
-        // Show legs when the camera is on a surface (block below).
-        // Hide legs when floating in air (moved there by mover, or falling).
-        state.showLegs = entity.hasBlockBelow();
+        // Show legs when gravity is enabled AND camera is on a surface.
+        // Hide legs when gravity is disabled or floating in air.
+        state.showLegs = entity.isGravityEnabled() && entity.hasBlockBelow();
     }
 
     @Override

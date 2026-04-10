@@ -109,22 +109,30 @@ public class CameramodClient implements ClientModInitializer {
                 }
                 if (target == null) continue;
 
-                double tx = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastRenderX, target.getX());
-                double ty = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastRenderY, target.getY())
-                        + target.getStandingEyeHeight();
-                double tz = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastRenderZ, target.getZ());
-                double cx = net.minecraft.util.math.MathHelper.lerp(tickDelta, cam.lastRenderX, cam.getX());
-                double cy = net.minecraft.util.math.MathHelper.lerp(tickDelta, cam.lastRenderY, cam.getY())
-                        + cam.getStandingEyeHeight();
-                double cz = net.minecraft.util.math.MathHelper.lerp(tickDelta, cam.lastRenderZ, cam.getZ());
+                float yaw, pitch;
+                if (cam.getFixerMode() == 1) {
+                    // Look Same Way mode: copy target's interpolated rotation
+                    yaw = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastYaw, target.getYaw());
+                    pitch = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastPitch, target.getPitch());
+                } else {
+                    // Look At mode: face toward target
+                    double tx = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastRenderX, target.getX());
+                    double ty = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastRenderY, target.getY())
+                            + target.getStandingEyeHeight() - 0.15;
+                    double tz = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastRenderZ, target.getZ());
+                    double cx = net.minecraft.util.math.MathHelper.lerp(tickDelta, cam.lastRenderX, cam.getX());
+                    double cy = net.minecraft.util.math.MathHelper.lerp(tickDelta, cam.lastRenderY, cam.getY())
+                            + cam.getStandingEyeHeight();
+                    double cz = net.minecraft.util.math.MathHelper.lerp(tickDelta, cam.lastRenderZ, cam.getZ());
 
-                double dx = tx - cx;
-                double dy = ty - cy;
-                double dz = tz - cz;
-                double horizontal = Math.sqrt(dx * dx + dz * dz);
+                    double dx = tx - cx;
+                    double dy = ty - cy;
+                    double dz = tz - cz;
+                    double horizontal = Math.sqrt(dx * dx + dz * dz);
 
-                float yaw = (float) (Math.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0f;
-                float pitch = (float) (-(Math.atan2(dy, horizontal) * (180.0 / Math.PI)));
+                    yaw = (float) (Math.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0f;
+                    pitch = (float) (-(Math.atan2(dy, horizontal) * (180.0 / Math.PI)));
+                }
 
                 cam.setYaw(yaw);
                 cam.setPitch(pitch);

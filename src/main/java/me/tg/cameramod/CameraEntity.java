@@ -35,6 +35,25 @@ public class CameraEntity extends LivingEntity {
     private static final TrackedData<String> FIXED_TARGET =
             DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.STRING);
 
+    // Fixer mode: 0 = look_at (face target), 1 = look_same_way (copy target's rotation)
+    private static final TrackedData<Byte> FIXER_MODE =
+            DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.BYTE);
+
+    // Whether gravity is enabled for this camera (toggled by gravity item)
+    private static final TrackedData<Boolean> GRAVITY_ENABLED =
+            DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.BOOLEAN);
+
+    // UUID of the entity this camera is attached to (moves with it)
+    private static final TrackedData<String> ATTACH_TARGET =
+            DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.STRING);
+    // Relative offset from the attached entity
+    private static final TrackedData<Float> ATTACH_OFFSET_X =
+            DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.FLOAT);
+    private static final TrackedData<Float> ATTACH_OFFSET_Y =
+            DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.FLOAT);
+    private static final TrackedData<Float> ATTACH_OFFSET_Z =
+            DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.FLOAT);
+
     public static DefaultAttributeContainer.Builder createCameraAttributes() {
         return LivingEntity.createLivingAttributes()
                 .add(EntityAttributes.MAX_HEALTH, 1.0)
@@ -53,6 +72,12 @@ public class CameraEntity extends LivingEntity {
         builder.add(IS_BEING_MOVED, false);
         builder.add(GROUNDED, true); // cameras start grounded (placed on a surface)
         builder.add(FIXED_TARGET, "");
+        builder.add(FIXER_MODE, (byte) 0);
+        builder.add(GRAVITY_ENABLED, true);
+        builder.add(ATTACH_TARGET, "");
+        builder.add(ATTACH_OFFSET_X, 0.0f);
+        builder.add(ATTACH_OFFSET_Y, 0.0f);
+        builder.add(ATTACH_OFFSET_Z, 0.0f);
     }
 
     // --- Zoom ---
@@ -93,6 +118,54 @@ public class CameraEntity extends LivingEntity {
         this.dataTracker.set(FIXED_TARGET, uuid != null ? uuid.toString() : "");
     }
 
+    // --- Fixer mode ---
+    public byte getFixerMode() {
+        return this.dataTracker.get(FIXER_MODE);
+    }
+
+    public void setFixerMode(byte mode) {
+        this.dataTracker.set(FIXER_MODE, mode);
+    }
+
+    // --- Gravity enabled ---
+    public boolean isGravityEnabled() {
+        return this.dataTracker.get(GRAVITY_ENABLED);
+    }
+
+    public void setGravityEnabled(boolean enabled) {
+        this.dataTracker.set(GRAVITY_ENABLED, enabled);
+        if (!enabled) {
+            // Disable gravity immediately, un-ground
+            this.dataTracker.set(GROUNDED, false);
+            this.setNoGravity(true);
+            this.setVelocity(Vec3d.ZERO);
+        }
+    }
+
+    // --- Attachment target ---
+    public UUID getAttachTargetUuid() {
+        String s = this.dataTracker.get(ATTACH_TARGET);
+        if (s == null || s.isEmpty()) return null;
+        try { return UUID.fromString(s); } catch (IllegalArgumentException e) { return null; }
+    }
+
+    public void setAttachTargetUuid(UUID uuid) {
+        this.dataTracker.set(ATTACH_TARGET, uuid != null ? uuid.toString() : "");
+    }
+
+    public Vec3d getAttachOffset() {
+        return new Vec3d(
+                this.dataTracker.get(ATTACH_OFFSET_X),
+                this.dataTracker.get(ATTACH_OFFSET_Y),
+                this.dataTracker.get(ATTACH_OFFSET_Z));
+    }
+
+    public void setAttachOffset(Vec3d offset) {
+        this.dataTracker.set(ATTACH_OFFSET_X, (float) offset.x);
+        this.dataTracker.set(ATTACH_OFFSET_Y, (float) offset.y);
+        this.dataTracker.set(ATTACH_OFFSET_Z, (float) offset.z);
+    }
+
     /**
      * Check if there's a solid block directly below the camera's feet.
      * Uses the entity's actual Y coordinate (minus a small epsilon) to avoid
@@ -117,8 +190,8 @@ public class CameraEntity extends LivingEntity {
         // Uses a GROUNDED latch to prevent oscillation.
         // Once grounded, stays grounded until a mover picks it up.
         if (!this.getWorld().isClient) {
-            if (isBeingMoved()) {
-                // Mover active: float freely, no gravity
+            if (!isGravityEnabled() || isBeingMoved()) {
+                // Gravity disabled or mover active: float freely
                 this.setNoGravity(true);
             } else if (this.dataTracker.get(GROUNDED)) {
                 // Grounded latch active: no gravity, stay in place
@@ -132,6 +205,19 @@ public class CameraEntity extends LivingEntity {
             } else {
                 // In air, not moved, not grounded: fall
                 this.setNoGravity(false);
+            }
+
+            // Attachment: follow attached entity with saved offset
+            UUID attachUuid = getAttachTargetUuid();
+            if (attachUuid != null && this.getWorld() instanceof ServerWorld sw) {
+                net.minecraft.entity.Entity attachTarget = sw.getEntity(attachUuid);
+                if (attachTarget != null) {
+                    Vec3d offset = getAttachOffset();
+                    this.requestTeleport(
+                            attachTarget.getX() + offset.x,
+                            attachTarget.getY() + offset.y,
+                            attachTarget.getZ() + offset.z);
+                }
             }
         }
 
@@ -170,6 +256,19 @@ public class CameraEntity extends LivingEntity {
         });
         float zoom = view.getFloat("ZoomLevel", 1.0f);
         this.dataTracker.set(ZOOM_LEVEL, zoom);
+        this.dataTracker.set(FIXER_MODE, view.getByte("FixerMode", (byte) 0));
+        this.dataTracker.set(GRAVITY_ENABLED, view.getBoolean("GravityEnabled", true));
+
+        view.getOptionalString("AttachTarget").ifPresent(s -> {
+            try {
+                setAttachTargetUuid(UUID.fromString(s));
+            } catch (IllegalArgumentException e) {
+                setAttachTargetUuid(null);
+            }
+        });
+        this.dataTracker.set(ATTACH_OFFSET_X, view.getFloat("AttachOffsetX", 0.0f));
+        this.dataTracker.set(ATTACH_OFFSET_Y, view.getFloat("AttachOffsetY", 0.0f));
+        this.dataTracker.set(ATTACH_OFFSET_Z, view.getFloat("AttachOffsetZ", 0.0f));
     }
 
     @Override
@@ -181,6 +280,21 @@ public class CameraEntity extends LivingEntity {
         float zoom = this.dataTracker.get(ZOOM_LEVEL);
         if (zoom != 1.0f) {
             view.putFloat("ZoomLevel", zoom);
+        }
+        byte fixerMode = this.dataTracker.get(FIXER_MODE);
+        if (fixerMode != 0) {
+            view.putByte("FixerMode", fixerMode);
+        }
+        if (!isGravityEnabled()) {
+            view.putBoolean("GravityEnabled", false);
+        }
+        UUID attachTarget = getAttachTargetUuid();
+        if (attachTarget != null) {
+            view.putString("AttachTarget", attachTarget.toString());
+            Vec3d offset = getAttachOffset();
+            view.putFloat("AttachOffsetX", (float) offset.x);
+            view.putFloat("AttachOffsetY", (float) offset.y);
+            view.putFloat("AttachOffsetZ", (float) offset.z);
         }
     }
 }
