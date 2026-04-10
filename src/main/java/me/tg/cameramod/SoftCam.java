@@ -94,6 +94,12 @@ public class SoftCam {
         }
         Pointer cam = INSTANCE.scCreateCamera(width, height, framerate);
         if (cam == null) {
+            // Previous instance may still be held — wait briefly and retry
+            LOGGER.warn("scCreateCamera returned null, retrying after delay...");
+            try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+            cam = INSTANCE.scCreateCamera(width, height, framerate);
+        }
+        if (cam == null) {
             LOGGER.error("scCreateCamera returned null ({}x{} @ {}fps)", width, height, framerate);
         }
         return cam;

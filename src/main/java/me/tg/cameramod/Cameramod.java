@@ -32,6 +32,7 @@ public class Cameramod implements ModInitializer {
             Identifier.of(MOD_ID, "camera"),
             EntityType.Builder.create(CameraEntity::new, SpawnGroup.CREATURE)
                     .dimensions(0.75f, 1.5f)
+                    .maxTrackingRange(256)
                     .build(CAMERA_ENTITY_KEY)
     );
 
@@ -60,9 +61,14 @@ public class Cameramod implements ModInitializer {
 
         FabricDefaultAttributeRegistry.register(CAMERA_ENTITY_ENTITY_TYPE, CameraEntity.createCameraAttributes());
 
+        // S2C packets
         PayloadTypeRegistry.playS2C().register(CameraServerThing.SetCameraS2CPayload.ID, CameraServerThing.SetCameraS2CPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(CameraServerThing.BindCameraS2CPayload.ID, CameraServerThing.BindCameraS2CPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(CameraServerThing.UnbindCameraS2CPayload.ID, CameraServerThing.UnbindCameraS2CPayload.CODEC);
+        PayloadTypeRegistry.playS2C().register(CameraServerThing.CameraItemStateS2CPayload.ID, CameraServerThing.CameraItemStateS2CPayload.CODEC);
+
+        // C2S packets
+        PayloadTypeRegistry.playC2S().register(CameraServerThing.CameraScrollC2SPayload.ID, CameraServerThing.CameraScrollC2SPayload.CODEC);
 
         CameraServerThing.register();
         ServerItems.registerItems();
@@ -75,6 +81,7 @@ public class Cameramod implements ModInitializer {
             itemGroup.add(ServerItems.CAMERA_ORIENTER);
             itemGroup.add(ServerItems.CAMERA_MOVER);
             itemGroup.add(ServerItems.CAMERA_FIXER);
+            itemGroup.add(ServerItems.CAMERA_ZOOMER);
         });
     }
 }

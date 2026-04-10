@@ -9,6 +9,7 @@ import net.minecraft.client.render.Frustum;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.List;
@@ -27,7 +28,14 @@ public class WorldRendererMixin {
         }
     }
 
-    // Clouds and weather render normally on the camera — no suppression needed
-    // because the camera pass runs BEFORE the player render (HEAD of render()),
-    // so the player's renderWorld() overwrites all state afterward.
+    // Skip terrain setup entirely during camera render pass.
+    // Any modification to terrain state (even just frustum application) causes
+    // flickering for the player because the async occlusion pipeline and chunk
+    // render lists get corrupted. The camera reuses the player's chunk list.
+    @Inject(method = "setupTerrain", at = @At("HEAD"), cancellable = true)
+    private void cameramod$skipTerrainSetupForCamera(Camera camera, Frustum frustum, boolean hasForcedFrustum, boolean spectator, CallbackInfo ci) {
+        if (CameraRenderer.isRendering()) {
+            ci.cancel();
+        }
+    }
 }

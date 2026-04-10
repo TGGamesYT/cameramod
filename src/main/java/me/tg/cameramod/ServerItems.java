@@ -1,6 +1,10 @@
 package me.tg.cameramod;
 
+import com.mojang.serialization.Codec;
+import net.fabricmc.fabric.api.attachment.v1.AttachmentRegistry;
+import net.fabricmc.fabric.api.attachment.v1.AttachmentType;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.FluidBlock;
 import net.minecraft.component.type.TooltipDisplayComponent;
@@ -28,8 +32,10 @@ import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.GameMode;
 import net.minecraft.world.RaycastContext;
 import net.minecraft.world.World;
 import net.minecraft.world.event.GameEvent;
@@ -57,14 +63,30 @@ public class ServerItems {
     static RegistryKey<Item> camera_fixer_key = RegistryKey.of(RegistryKeys.ITEM, Identifier.of(Cameramod.MOD_ID, "camera_fixer"));
     public static final Item CAMERA_FIXER = new CameraFixerItem(new Item.Settings().maxCount(1).registryKey(camera_fixer_key));
 
+    static RegistryKey<Item> camera_zoomer_key = RegistryKey.of(RegistryKeys.ITEM, Identifier.of(Cameramod.MOD_ID, "camera_zoomer"));
+    public static final Item CAMERA_ZOOMER = new CameraZoomerItem(new Item.Settings().maxCount(1).registryKey(camera_zoomer_key));
+
     // ---- Storage Maps ----
     public static final HashMap<UUID, UUID> CAMERA_COMMAND_STORAGE = new HashMap<>();
     public static final HashMap<UUID, Double> CAMERA_MOVER_DISTANCE = new HashMap<>();
     public static final HashMap<UUID, Boolean> CAMERA_MOVER_ACTIVENESS = new HashMap<>();
     public static final HashMap<UUID, UUID> CAMERA_MOVER_UUIDS = new HashMap<>();
-
-    // Fixer: player UUID → selected camera UUID (for the two-step shift+click workflow)
     public static final HashMap<UUID, UUID> CAMERA_FIXER_SELECTION = new HashMap<>();
+    public static final HashMap<UUID, UUID> CAMERA_ZOOMER_UUIDS = new HashMap<>();
+
+    // Saved camera UUID (persisted across restarts via Fabric attachment)
+    public static final AttachmentType<String> SAVED_CAMERA_ATTACHMENT = AttachmentRegistry.createPersistent(
+            Identifier.of(Cameramod.MOD_ID, "saved_camera"), Codec.STRING);
+
+    // Streaming toggle: true = streaming on, false = off image
+    public static final HashMap<UUID, Boolean> STREAMING_ENABLED = new HashMap<>();
+
+    // Cached gamerule values for change detection
+    private static boolean lastCameraSeesChat = false;
+    private static boolean lastCameraFlipped = false;
+
+    // Track force-loaded chunks per camera UUID so we can unload them when camera moves/dies
+    private static final HashMap<UUID, Set<Long>> FORCED_CHUNKS = new HashMap<>();
 
     public static void registerItems() {
         Registry.register(Registries.ITEM, camera_item_key, CAMERA_ITEM);
@@ -72,27 +94,170 @@ public class ServerItems {
         Registry.register(Registries.ITEM, camera_orienter_key, CAMERA_ORIENTER);
         Registry.register(Registries.ITEM, camera_mover_key, CAMERA_MOVER);
         Registry.register(Registries.ITEM, camera_fixer_key, CAMERA_FIXER);
+        Registry.register(Registries.ITEM, camera_zoomer_key, CAMERA_ZOOMER);
         ServerTickEvents.START_SERVER_TICK.register(ServerItems::onServerTick);
+
+        // On player join: sync gamerule values and auto-activate saved camera
+        ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+            ServerPlayerEntity player = handler.getPlayer();
+            // Sync gamerule values to client
+            boolean seesChat = server.getGameRules().getBoolean(Cameramod.CAMERA_SEES_CHAT);
+            boolean flipped = server.getGameRules().getBoolean(Cameramod.CAMERA_FLIPPED);
+            ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 3, seesChat));
+            ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 4, flipped));
+
+            String savedStr = player.getAttached(SAVED_CAMERA_ATTACHMENT);
+            if (savedStr != null) {
+                try {
+                    UUID camUuid = UUID.fromString(savedStr);
+                    CAMERA_COMMAND_STORAGE.put(player.getUuid(), camUuid);
+                    STREAMING_ENABLED.put(player.getUuid(), true);
+                    ServerPlayNetworking.send(player,
+                            new CameraServerThing.CameraItemStateS2CPayload((byte) 2, true));
+                    ServerPlayNetworking.send(player,
+                            new CameraServerThing.BindCameraS2CPayload(camUuid));
+                } catch (IllegalArgumentException ignored) {}
+            }
+        });
+
+        // On player disconnect: save active camera to attachment for next session
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            ServerPlayerEntity player = handler.getPlayer();
+            UUID activeCamera = CAMERA_COMMAND_STORAGE.get(player.getUuid());
+            if (activeCamera != null) {
+                player.setAttached(SAVED_CAMERA_ATTACHMENT, activeCamera.toString());
+            }
+            // Clean up runtime maps
+            CAMERA_COMMAND_STORAGE.remove(player.getUuid());
+            STREAMING_ENABLED.remove(player.getUuid());
+        });
+    }
+
+    // ==================== Raycast Helpers ====================
+
+    public static CameraEntity raycastCamera(World world, PlayerEntity player, double maxDistance) {
+        Entity hit = raycastEntity(world, player, maxDistance);
+        return hit instanceof CameraEntity cam ? cam : null;
+    }
+
+    public static Entity raycastEntity(World world, PlayerEntity player, double maxDistance) {
+        Vec3d start = player.getCameraPosVec(1.0f);
+        Vec3d direction = player.getRotationVec(1.0f);
+        Vec3d end = start.add(direction.multiply(maxDistance));
+        Box searchBox = new Box(start, end).expand(1.0);
+
+        Entity closest = null;
+        double closestDist = Double.MAX_VALUE;
+
+        for (Entity entity : world.getOtherEntities(player, searchBox)) {
+            Box box = entity.getBoundingBox().expand(0.3);
+            var hit = box.raycast(start, end);
+            if (hit.isPresent()) {
+                double dist = start.squaredDistanceTo(hit.get());
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    closest = entity;
+                }
+            }
+        }
+        return closest;
+    }
+
+    private static boolean isCreative(PlayerEntity player) {
+        if (player instanceof ServerPlayerEntity sp) {
+            return sp.interactionManager.getGameMode() == GameMode.CREATIVE;
+        }
+        return player.isCreative();
+    }
+
+    // ==================== Scroll Handlers ====================
+
+    public static void handleMoverScroll(ServerPlayerEntity player, float delta) {
+        UUID userId = player.getUuid();
+        if (!Boolean.TRUE.equals(CAMERA_MOVER_ACTIVENESS.get(userId))) return;
+        Double dist = CAMERA_MOVER_DISTANCE.get(userId);
+        if (dist == null) return;
+        dist = Math.max(1.0, dist + delta * 0.5);
+        CAMERA_MOVER_DISTANCE.put(userId, dist);
+        player.sendMessage(Text.literal("Distance: " + String.format("%.1f", dist)), true);
+    }
+
+    public static void clearZoomerTarget(ServerPlayerEntity player) {
+        UUID userId = player.getUuid();
+        if (CAMERA_ZOOMER_UUIDS.containsKey(userId)) {
+            CAMERA_ZOOMER_UUIDS.remove(userId);
+            ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 1, false));
+            player.sendMessage(Text.literal("Zoom target cleared"), true);
+        }
+    }
+
+    public static void handleZoomerScroll(ServerPlayerEntity player, float delta) {
+        UUID userId = player.getUuid();
+        UUID camUuid = CAMERA_ZOOMER_UUIDS.get(userId);
+        if (camUuid == null) return;
+        ServerWorld world = (ServerWorld) player.getWorld();
+        Entity entity = world.getEntity(camUuid);
+        if (!(entity instanceof CameraEntity cam)) return;
+
+        float zoom = cam.getZoomLevel();
+        zoom += delta * 0.25f;
+        zoom = Math.max(0.25f, Math.min(10.0f, zoom));
+        cam.setZoomLevel(zoom);
+        player.sendMessage(Text.literal("Zoom: " + String.format("%.2f", zoom) + "x"), true);
+    }
+
+    // ==================== Chunk Force-Loading ====================
+
+    private static void updateForcedChunks(ServerWorld world, CameraEntity cam) {
+        UUID camId = cam.getUuid();
+        ChunkPos center = cam.getChunkPos();
+        int radius = 3; // 7x7 chunk area
+
+        Set<Long> newChunks = new HashSet<>();
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                newChunks.add(ChunkPos.toLong(center.x + dx, center.z + dz));
+            }
+        }
+
+        Set<Long> oldChunks = FORCED_CHUNKS.getOrDefault(camId, Collections.emptySet());
+
+        // Un-force old chunks no longer needed
+        for (long pos : oldChunks) {
+            if (!newChunks.contains(pos)) {
+                world.setChunkForced(ChunkPos.getPackedX(pos), ChunkPos.getPackedZ(pos), false);
+            }
+        }
+
+        // Force new chunks
+        for (long pos : newChunks) {
+            if (!oldChunks.contains(pos)) {
+                world.setChunkForced(ChunkPos.getPackedX(pos), ChunkPos.getPackedZ(pos), true);
+            }
+        }
+
+        FORCED_CHUNKS.put(camId, newChunks);
+    }
+
+    /** Called when a camera is unbound or removed — cleans up forced chunks. */
+    public static void clearForcedChunks(ServerWorld world, UUID camId) {
+        Set<Long> chunks = FORCED_CHUNKS.remove(camId);
+        if (chunks != null) {
+            for (long pos : chunks) {
+                world.setChunkForced(ChunkPos.getPackedX(pos), ChunkPos.getPackedZ(pos), false);
+            }
+        }
     }
 
     // ==================== Camera Item ====================
-    // Spawns a camera entity in the world
     public static class CameraItem extends Item {
-        public CameraItem(Settings settings) {
-            super(settings);
-        }
+        public CameraItem(Settings settings) { super(settings); }
 
         @Override
-        public void appendTooltip(ItemStack stack,
-                                  TooltipContext context,
-                                  TooltipDisplayComponent displayComponent,
-                                  Consumer<Text> textConsumer,
-                                  TooltipType type) {
-
-            textConsumer.accept(Text.translatable("item.cameramod.camera_item.tooltip.1")
-                    .formatted(Formatting.GRAY));
-            textConsumer.accept(Text.translatable("item.cameramod.camera_item.tooltip.2")
-                    .formatted(Formatting.DARK_GRAY));
+        public void appendTooltip(ItemStack stack, TooltipContext context, TooltipDisplayComponent displayComponent,
+                                  Consumer<Text> textConsumer, TooltipType type) {
+            textConsumer.accept(Text.translatable("item.cameramod.camera_item.tooltip.1").formatted(Formatting.GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_item.tooltip.2").formatted(Formatting.DARK_GRAY));
         }
 
         @Override
@@ -130,26 +295,17 @@ public class ServerItems {
         public ActionResult use(World world, PlayerEntity user, Hand hand) {
             ItemStack itemStack = user.getStackInHand(hand);
             BlockHitResult blockHitResult = raycast(world, user, RaycastContext.FluidHandling.SOURCE_ONLY);
-            if (blockHitResult.getType() != HitResult.Type.BLOCK) {
-                return ActionResult.PASS;
-            }
-            if (!(world instanceof ServerWorld serverWorld)) {
-                return ActionResult.SUCCESS;
-            }
+            if (blockHitResult.getType() != HitResult.Type.BLOCK) return ActionResult.PASS;
+            if (!(world instanceof ServerWorld serverWorld)) return ActionResult.SUCCESS;
 
             BlockPos blockPos = blockHitResult.getBlockPos();
-            if (!(world.getBlockState(blockPos).getBlock() instanceof FluidBlock)) {
-                return ActionResult.PASS;
-            }
-            if (!world.canEntityModifyAt(user, blockPos) || !user.canPlaceOn(blockPos, blockHitResult.getSide(), itemStack)) {
+            if (!(world.getBlockState(blockPos).getBlock() instanceof FluidBlock)) return ActionResult.PASS;
+            if (!world.canEntityModifyAt(user, blockPos) || !user.canPlaceOn(blockPos, blockHitResult.getSide(), itemStack))
                 return ActionResult.FAIL;
-            }
 
             Entity entity = ((EntityType<?>) CAMERA_ENTITY_ENTITY_TYPE).spawnFromItemStack(
                     serverWorld, itemStack, user, blockPos, SpawnReason.SPAWN_ITEM_USE, false, false);
-            if (entity == null) {
-                return ActionResult.PASS;
-            }
+            if (entity == null) return ActionResult.PASS;
 
             itemStack.decrementUnlessCreative(1, user);
             user.incrementStat(Stats.USED.getOrCreateStat(this));
@@ -161,69 +317,131 @@ public class ServerItems {
 
     // ==================== Camera Activator ====================
     public static class CameraActivatorItem extends Item {
-        public CameraActivatorItem(Settings settings) {
-            super(settings);
-        }
+        public CameraActivatorItem(Settings settings) { super(settings); }
 
         @Override
-        public void appendTooltip(ItemStack stack,
-                                  TooltipContext context,
-                                  TooltipDisplayComponent displayComponent,
-                                  Consumer<Text> textConsumer,
-                                  TooltipType type) {
-
-            textConsumer.accept(Text.translatable("item.cameramod.camera_activator.tooltip.1")
-                    .formatted(Formatting.GRAY));
-            textConsumer.accept(Text.translatable("item.cameramod.camera_activator.tooltip.2")
-                    .formatted(Formatting.DARK_GRAY));
+        public void appendTooltip(ItemStack stack, TooltipContext context, TooltipDisplayComponent displayComponent,
+                                  Consumer<Text> textConsumer, TooltipType type) {
+            textConsumer.accept(Text.translatable("item.cameramod.camera_activator.tooltip.1").formatted(Formatting.GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_activator.tooltip.2").formatted(Formatting.DARK_GRAY));
         }
 
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
             if (user.getWorld().isClient) return ActionResult.SUCCESS;
-
             if (entity instanceof CameraEntity) {
-                CAMERA_COMMAND_STORAGE.put(user.getUuid(), entity.getUuid());
-                if (user instanceof ServerPlayerEntity serverPlayer) {
-                    ServerPlayNetworking.send(serverPlayer,
-                            new CameraServerThing.BindCameraS2CPayload(entity.getUuid()));
-                }
-                user.sendMessage(Text.literal("Camera bound to you"), true);
-                return ActionResult.SUCCESS;
+                return toggleBind(user, entity);
             }
             user.sendMessage(Text.literal("Not a camera entity"), true);
             return ActionResult.PASS;
+        }
+
+        @Override
+        public ActionResult use(World world, PlayerEntity user, Hand hand) {
+            if (world.isClient) return ActionResult.SUCCESS;
+
+            // Creative: 20-block raycast for distant cameras
+            if (isCreative(user)) {
+                CameraEntity cam = raycastCamera(world, user, 20.0);
+                if (cam != null) return toggleBind(user, cam);
+            }
+
+            UUID userId = user.getUuid();
+            boolean isStreamingOn = Boolean.TRUE.equals(STREAMING_ENABLED.get(userId));
+
+            if (isStreamingOn) {
+                // Streaming is ON → toggle OFF
+                // If a camera is active, save it and unbind
+                UUID activeCamera = CAMERA_COMMAND_STORAGE.get(userId);
+                if (activeCamera != null) {
+                    CAMERA_COMMAND_STORAGE.remove(userId);
+                    if (user instanceof ServerPlayerEntity sp) {
+                        clearForcedChunks((ServerWorld) user.getWorld(), activeCamera);
+                        ServerPlayNetworking.send(sp, new CameraServerThing.UnbindCameraS2CPayload());
+                        sp.setAttached(SAVED_CAMERA_ATTACHMENT, activeCamera.toString());
+                    }
+                }
+                STREAMING_ENABLED.put(userId, false);
+                if (user instanceof ServerPlayerEntity sp) {
+                    ServerPlayNetworking.send(sp, new CameraServerThing.CameraItemStateS2CPayload((byte) 2, false));
+                }
+                user.sendMessage(Text.literal("Streaming disabled"), true);
+            } else {
+                // Streaming is OFF → toggle ON
+                STREAMING_ENABLED.put(userId, true);
+                if (user instanceof ServerPlayerEntity sp) {
+                    ServerPlayNetworking.send(sp, new CameraServerThing.CameraItemStateS2CPayload((byte) 2, true));
+                }
+
+                // Try to re-activate saved camera
+                String savedStr = (user instanceof ServerPlayerEntity sp)
+                        ? sp.getAttached(SAVED_CAMERA_ATTACHMENT) : null;
+                if (savedStr != null) {
+                    try {
+                        UUID savedCamera = UUID.fromString(savedStr);
+                        CAMERA_COMMAND_STORAGE.put(userId, savedCamera);
+                        if (user instanceof ServerPlayerEntity sp2) {
+                            ServerPlayNetworking.send(sp2,
+                                    new CameraServerThing.BindCameraS2CPayload(savedCamera));
+                        }
+                        user.sendMessage(Text.literal("Streaming enabled (camera re-activated)"), true);
+                    } catch (IllegalArgumentException e) {
+                        user.sendMessage(Text.literal("Streaming enabled (player POV)"), true);
+                    }
+                } else {
+                    // No saved camera → stream player POV
+                    user.sendMessage(Text.literal("Streaming enabled (player POV)"), true);
+                }
+            }
+            return ActionResult.SUCCESS;
+        }
+
+        private ActionResult toggleBind(PlayerEntity user, Entity entity) {
+            UUID userId = user.getUuid();
+            UUID currentBound = CAMERA_COMMAND_STORAGE.get(userId);
+            if (entity.getUuid().equals(currentBound)) {
+                // Already bound to this camera — unbind, unsave, and disable streaming
+                CAMERA_COMMAND_STORAGE.remove(userId);
+                STREAMING_ENABLED.put(userId, false);
+                if (user instanceof ServerPlayerEntity sp) {
+                    clearForcedChunks((ServerWorld) user.getWorld(), entity.getUuid());
+                    ServerPlayNetworking.send(sp, new CameraServerThing.CameraItemStateS2CPayload((byte) 2, false));
+                    ServerPlayNetworking.send(sp, new CameraServerThing.UnbindCameraS2CPayload());
+                    sp.removeAttached(SAVED_CAMERA_ATTACHMENT);
+                }
+                user.sendMessage(Text.literal("Camera unbound"), true);
+            } else {
+                // Bind to this camera (also saves it and enables streaming)
+                CAMERA_COMMAND_STORAGE.put(userId, entity.getUuid());
+                STREAMING_ENABLED.put(userId, true);
+                if (user instanceof ServerPlayerEntity sp) {
+                    ServerPlayNetworking.send(sp, new CameraServerThing.CameraItemStateS2CPayload((byte) 2, true));
+                    ServerPlayNetworking.send(sp,
+                            new CameraServerThing.BindCameraS2CPayload(entity.getUuid()));
+                    sp.setAttached(SAVED_CAMERA_ATTACHMENT, entity.getUuid().toString());
+                }
+                user.sendMessage(Text.literal("Camera bound to you"), true);
+            }
+            return ActionResult.SUCCESS;
         }
     }
 
     // ==================== Camera Orienter ====================
     public static class CameraOrienterItem extends Item {
-        public CameraOrienterItem(Settings settings) {
-            super(settings);
-        }
+        public CameraOrienterItem(Settings settings) { super(settings); }
 
         @Override
-        public void appendTooltip(ItemStack stack,
-                                  TooltipContext context,
-                                  TooltipDisplayComponent displayComponent,
-                                  Consumer<Text> textConsumer,
-                                  TooltipType type) {
-
-            textConsumer.accept(Text.translatable("item.cameramod.camera_orienter.tooltip.1")
-                    .formatted(Formatting.GRAY));
-            textConsumer.accept(Text.translatable("item.cameramod.camera_orienter.tooltip.2")
-                    .formatted(Formatting.DARK_GRAY));
+        public void appendTooltip(ItemStack stack, TooltipContext context, TooltipDisplayComponent displayComponent,
+                                  Consumer<Text> textConsumer, TooltipType type) {
+            textConsumer.accept(Text.translatable("item.cameramod.camera_orienter.tooltip.1").formatted(Formatting.GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_orienter.tooltip.2").formatted(Formatting.DARK_GRAY));
         }
 
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
             if (user.getWorld().isClient) return ActionResult.SUCCESS;
             if (entity instanceof CameraEntity cam) {
-                cam.setYaw(user.getYaw());
-                cam.setPitch(user.getPitch());
-                cam.setHeadYaw(user.getYaw());
-                cam.setBodyYaw(user.getYaw());
-                user.sendMessage(Text.literal("Camera oriented"), true);
+                orientCamera(cam, user);
                 return ActionResult.SUCCESS;
             }
             return ActionResult.PASS;
@@ -233,48 +451,49 @@ public class ServerItems {
         public ActionResult use(World world, PlayerEntity player, Hand hand) {
             if (world.isClient || player == null) return ActionResult.SUCCESS;
 
+            // Creative: 20-block raycast for distant cameras
+            if (isCreative(player)) {
+                CameraEntity cam = raycastCamera(world, player, 20.0);
+                if (cam != null) {
+                    orientCamera(cam, player);
+                    return ActionResult.SUCCESS;
+                }
+            }
+
+            // Click air: orient bound camera
             UUID camUuid = CAMERA_COMMAND_STORAGE.get(player.getUuid());
             if (camUuid == null) {
                 player.sendMessage(Text.literal("No camera bound. Use Camera Activator first."), true);
                 return ActionResult.PASS;
             }
-
             Entity cam = ((ServerWorld) world).getEntity(camUuid);
             if (cam == null) {
                 player.sendMessage(Text.literal("Bound camera not found"), true);
                 return ActionResult.PASS;
             }
+            if (cam instanceof CameraEntity ce) orientCamera(ce, player);
+            return ActionResult.SUCCESS;
+        }
 
+        private void orientCamera(CameraEntity cam, PlayerEntity player) {
             cam.setYaw(player.getYaw());
             cam.setPitch(player.getPitch());
-            if (cam instanceof LivingEntity le) {
-                le.setHeadYaw(player.getYaw());
-                le.setBodyYaw(player.getYaw());
-            }
+            cam.setHeadYaw(player.getYaw());
+            cam.setBodyYaw(player.getYaw());
             player.sendMessage(Text.literal("Camera oriented"), true);
-            return ActionResult.SUCCESS;
         }
     }
 
     // ==================== Camera Mover ====================
     public static class CameraMoverItem extends Item {
-        public CameraMoverItem(Settings settings) {
-            super(settings);
-        }
+        public CameraMoverItem(Settings settings) { super(settings); }
 
         @Override
-        public void appendTooltip(ItemStack stack,
-                                  TooltipContext context,
-                                  TooltipDisplayComponent displayComponent,
-                                  Consumer<Text> textConsumer,
-                                  TooltipType type) {
-
-            textConsumer.accept(Text.translatable("item.cameramod.camera_mover.tooltip.1")
-                    .formatted(Formatting.GRAY));
-            textConsumer.accept(Text.translatable("item.cameramod.camera_mover.tooltip.2")
-                    .formatted(Formatting.DARK_GRAY));
-            textConsumer.accept(Text.translatable("item.cameramod.camera_mover.tooltip.3")
-                    .formatted(Formatting.DARK_GRAY));
+        public void appendTooltip(ItemStack stack, TooltipContext context, TooltipDisplayComponent displayComponent,
+                                  Consumer<Text> textConsumer, TooltipType type) {
+            textConsumer.accept(Text.translatable("item.cameramod.camera_mover.tooltip.1").formatted(Formatting.GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_mover.tooltip.2").formatted(Formatting.DARK_GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_mover.tooltip.3").formatted(Formatting.DARK_GRAY));
         }
 
         @Override
@@ -282,63 +501,75 @@ public class ServerItems {
             if (world.isClient) return ActionResult.SUCCESS;
 
             UUID userId = user.getUuid();
+
             if (Boolean.TRUE.equals(CAMERA_MOVER_ACTIVENESS.get(userId))) {
-                CAMERA_MOVER_DISTANCE.remove(userId);
-                CAMERA_MOVER_ACTIVENESS.remove(userId);
-                CAMERA_MOVER_UUIDS.remove(userId);
-                user.sendMessage(Text.literal("Camera tracking stopped"), true);
+                stopMover(user);
                 return ActionResult.SUCCESS;
             }
+
+            // 20-block raycast to start following a distant camera
+            CameraEntity cam = raycastCamera(world, user, 20.0);
+            if (cam != null) {
+                startMover(user, cam);
+                return ActionResult.SUCCESS;
+            }
+
             return ActionResult.PASS;
         }
 
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
             if (user.getWorld().isClient) return ActionResult.SUCCESS;
-            if (!(entity instanceof CameraEntity)) return ActionResult.PASS;
+            if (!(entity instanceof CameraEntity cam)) return ActionResult.PASS;
 
-            UUID userId = user.getUuid();
-            Boolean active = CAMERA_MOVER_ACTIVENESS.get(userId);
-
-            if (active == null || !active) {
-                double dist = entity.getPos().distanceTo(user.getPos());
-                CAMERA_MOVER_DISTANCE.put(userId, dist);
-                CAMERA_MOVER_UUIDS.put(userId, entity.getUuid());
-                CAMERA_MOVER_ACTIVENESS.put(userId, true);
-                user.sendMessage(Text.literal("Camera following at distance " + String.format("%.1f", dist)), true);
-                return ActionResult.SUCCESS;
+            if (!Boolean.TRUE.equals(CAMERA_MOVER_ACTIVENESS.get(user.getUuid()))) {
+                startMover(user, cam);
+            } else {
+                stopMover(user);
             }
+            return ActionResult.SUCCESS;
+        }
 
-            // Already active — toggle off
+        private void startMover(PlayerEntity user, CameraEntity cam) {
+            UUID userId = user.getUuid();
+            double dist = cam.getPos().distanceTo(user.getPos());
+            CAMERA_MOVER_DISTANCE.put(userId, dist);
+            CAMERA_MOVER_UUIDS.put(userId, cam.getUuid());
+            CAMERA_MOVER_ACTIVENESS.put(userId, true);
+            cam.setBeingMoved(true);
+            if (user instanceof ServerPlayerEntity sp) {
+                ServerPlayNetworking.send(sp, new CameraServerThing.CameraItemStateS2CPayload((byte) 0, true));
+            }
+            user.sendMessage(Text.literal("Camera following at distance " + String.format("%.1f", dist)), true);
+        }
+
+        private void stopMover(PlayerEntity user) {
+            UUID userId = user.getUuid();
+            UUID camUuid = CAMERA_MOVER_UUIDS.get(userId);
+            if (camUuid != null && user.getWorld() instanceof ServerWorld sw) {
+                Entity e = sw.getEntity(camUuid);
+                if (e instanceof CameraEntity ce) ce.setBeingMoved(false);
+            }
             CAMERA_MOVER_DISTANCE.remove(userId);
             CAMERA_MOVER_ACTIVENESS.remove(userId);
             CAMERA_MOVER_UUIDS.remove(userId);
+            if (user instanceof ServerPlayerEntity sp) {
+                ServerPlayNetworking.send(sp, new CameraServerThing.CameraItemStateS2CPayload((byte) 0, false));
+            }
             user.sendMessage(Text.literal("Camera tracking stopped"), true);
-            return ActionResult.SUCCESS;
         }
     }
 
     // ==================== Camera Fixer ====================
-    // Shift+click a camera to select it, then click any entity to fix the camera to it.
-    // Click a camera normally to un-fix it. Click air to check status.
     public static class CameraFixerItem extends Item {
-        public CameraFixerItem(Settings settings) {
-            super(settings);
-        }
+        public CameraFixerItem(Settings settings) { super(settings); }
 
         @Override
-        public void appendTooltip(ItemStack stack,
-                                  TooltipContext context,
-                                  TooltipDisplayComponent displayComponent,
-                                  Consumer<Text> textConsumer,
-                                  TooltipType type) {
-
-            textConsumer.accept(Text.translatable("item.cameramod.camera_fixer.tooltip.1")
-                    .formatted(Formatting.GRAY));
-            textConsumer.accept(Text.translatable("item.cameramod.camera_fixer.tooltip.2")
-                    .formatted(Formatting.DARK_GRAY));
-            textConsumer.accept(Text.translatable("item.cameramod.camera_fixer.tooltip.3")
-                    .formatted(Formatting.DARK_GRAY));
+        public void appendTooltip(ItemStack stack, TooltipContext context, TooltipDisplayComponent displayComponent,
+                                  Consumer<Text> textConsumer, TooltipType type) {
+            textConsumer.accept(Text.translatable("item.cameramod.camera_fixer.tooltip.1").formatted(Formatting.GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_fixer.tooltip.2").formatted(Formatting.DARK_GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_fixer.tooltip.3").formatted(Formatting.DARK_GRAY));
         }
 
         @Override
@@ -349,12 +580,9 @@ public class ServerItems {
 
             if (entity instanceof CameraEntity cam) {
                 if (user.isSneaking()) {
-                    // Shift+click camera → select it for fixing
                     CAMERA_FIXER_SELECTION.put(userId, cam.getUuid());
                     user.sendMessage(Text.literal("Camera selected. Now click an entity to fix the camera to it."), true);
-                    return ActionResult.SUCCESS;
                 } else {
-                    // Normal click camera → toggle tracking the player
                     if (cam.getFixedTargetUuid() != null && cam.getFixedTargetUuid().equals(user.getUuid())) {
                         cam.setFixedTargetUuid(null);
                         user.sendMessage(Text.literal("Camera tracking disabled"), true);
@@ -362,11 +590,10 @@ public class ServerItems {
                         cam.setFixedTargetUuid(user.getUuid());
                         user.sendMessage(Text.literal("Camera now tracks you"), true);
                     }
-                    return ActionResult.SUCCESS;
                 }
+                return ActionResult.SUCCESS;
             }
 
-            // Clicked a non-camera entity — check if we have a selected camera
             UUID selectedCamUuid = CAMERA_FIXER_SELECTION.get(userId);
             if (selectedCamUuid != null) {
                 ServerWorld world = (ServerWorld) user.getWorld();
@@ -391,21 +618,119 @@ public class ServerItems {
 
             UUID userId = user.getUuid();
 
-            // If we have a selection pending, clear it
-            if (CAMERA_FIXER_SELECTION.containsKey(userId)) {
+            // 20-block raycast for camera or entity
+            Entity hit = raycastEntity(world, user, 20.0);
+
+            // If we have a selection pending and hit a non-camera entity, assign target
+            UUID selectedCamUuid = CAMERA_FIXER_SELECTION.get(userId);
+            if (selectedCamUuid != null) {
+                if (hit != null && !(hit instanceof CameraEntity)) {
+                    ServerWorld sw = (ServerWorld) world;
+                    Entity camEntity = sw.getEntity(selectedCamUuid);
+                    if (camEntity instanceof CameraEntity cam) {
+                        cam.setFixedTargetUuid(hit.getUuid());
+                        CAMERA_FIXER_SELECTION.remove(userId);
+                        user.sendMessage(Text.literal("Camera now tracks " + hit.getName().getString()), true);
+                        return ActionResult.SUCCESS;
+                    }
+                }
                 CAMERA_FIXER_SELECTION.remove(userId);
                 user.sendMessage(Text.literal("Camera selection cleared"), true);
                 return ActionResult.SUCCESS;
             }
 
-            // Show status
+            // 20-block reach: interact with distant camera
+            if (hit instanceof CameraEntity cam) {
+                if (user.isSneaking()) {
+                    CAMERA_FIXER_SELECTION.put(userId, cam.getUuid());
+                    user.sendMessage(Text.literal("Camera selected. Now click an entity to fix the camera to it."), true);
+                } else {
+                    if (cam.getFixedTargetUuid() != null && cam.getFixedTargetUuid().equals(user.getUuid())) {
+                        cam.setFixedTargetUuid(null);
+                        user.sendMessage(Text.literal("Camera tracking disabled"), true);
+                    } else {
+                        cam.setFixedTargetUuid(user.getUuid());
+                        user.sendMessage(Text.literal("Camera now tracks you"), true);
+                    }
+                }
+                return ActionResult.SUCCESS;
+            }
+
             user.sendMessage(Text.literal("Shift+click a camera to select, then click an entity to fix"), true);
+            return ActionResult.SUCCESS;
+        }
+    }
+
+    // ==================== Camera Zoomer ====================
+    public static class CameraZoomerItem extends Item {
+        public CameraZoomerItem(Settings settings) { super(settings); }
+
+        @Override
+        public void appendTooltip(ItemStack stack, TooltipContext context, TooltipDisplayComponent displayComponent,
+                                  Consumer<Text> textConsumer, TooltipType type) {
+            textConsumer.accept(Text.translatable("item.cameramod.camera_zoomer.tooltip.1").formatted(Formatting.GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_zoomer.tooltip.2").formatted(Formatting.DARK_GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_zoomer.tooltip.3").formatted(Formatting.DARK_GRAY));
+        }
+
+        @Override
+        public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
+            if (user.getWorld().isClient) return ActionResult.SUCCESS;
+            if (!(entity instanceof CameraEntity cam)) return ActionResult.PASS;
+            if (!user.isSneaking()) return ActionResult.PASS;
+            return setZoomTarget(user, cam);
+        }
+
+        @Override
+        public ActionResult use(World world, PlayerEntity user, Hand hand) {
+            if (world.isClient) return ActionResult.SUCCESS;
+
+            UUID userId = user.getUuid();
+
+            // Shift+click: try to target a camera (20-block raycast)
+            if (user.isSneaking()) {
+                CameraEntity cam = raycastCamera(world, user, 20.0);
+                if (cam != null) return setZoomTarget(user, cam);
+            }
+
+            // Click air: clear zoom target
+            if (CAMERA_ZOOMER_UUIDS.containsKey(userId)) {
+                CAMERA_ZOOMER_UUIDS.remove(userId);
+                if (user instanceof ServerPlayerEntity sp) {
+                    ServerPlayNetworking.send(sp, new CameraServerThing.CameraItemStateS2CPayload((byte) 1, false));
+                }
+                user.sendMessage(Text.literal("Zoom target cleared"), true);
+                return ActionResult.SUCCESS;
+            }
+
+            user.sendMessage(Text.literal("Shift+click a camera to set zoom target"), true);
+            return ActionResult.SUCCESS;
+        }
+
+        private ActionResult setZoomTarget(PlayerEntity user, CameraEntity cam) {
+            CAMERA_ZOOMER_UUIDS.put(user.getUuid(), cam.getUuid());
+            if (user instanceof ServerPlayerEntity sp) {
+                ServerPlayNetworking.send(sp, new CameraServerThing.CameraItemStateS2CPayload((byte) 1, true));
+            }
+            user.sendMessage(Text.literal("Zoom target set (" + String.format("%.2f", cam.getZoomLevel()) + "x). Hold shift + scroll to adjust."), true);
             return ActionResult.SUCCESS;
         }
     }
 
     // ==================== Server Tick Handler ====================
     private static void onServerTick(MinecraftServer server) {
+        // Sync gamerule changes to all players
+        boolean seesChat = server.getGameRules().getBoolean(Cameramod.CAMERA_SEES_CHAT);
+        boolean flipped = server.getGameRules().getBoolean(Cameramod.CAMERA_FLIPPED);
+        if (seesChat != lastCameraSeesChat || flipped != lastCameraFlipped) {
+            lastCameraSeesChat = seesChat;
+            lastCameraFlipped = flipped;
+            for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
+                ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 3, seesChat));
+                ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 4, flipped));
+            }
+        }
+
         // Camera Mover: move cameras to follow players
         for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
             UUID userId = player.getUuid();
@@ -451,6 +776,18 @@ public class ServerItems {
                 cam.setPitch(pitch);
                 cam.setHeadYaw(yaw);
                 cam.setBodyYaw(yaw);
+            }
+        }
+
+        // Force-load chunks around bound cameras
+        for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
+            UUID camUuid = CAMERA_COMMAND_STORAGE.get(player.getUuid());
+            if (camUuid == null) continue;
+
+            ServerWorld world = (ServerWorld) player.getWorld();
+            Entity entity = world.getEntity(camUuid);
+            if (entity instanceof CameraEntity cam) {
+                updateForcedChunks(world, cam);
             }
         }
     }

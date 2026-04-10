@@ -8,8 +8,14 @@ import me.tg.cameramod.Cameramod;
 import me.tg.cameramod.SoftCam;
 import me.tg.cameramod.mixin.client.CameraAccessor;
 import me.tg.cameramod.mixin.client.GameRendererAccessor;
+import me.tg.cameramod.mixin.client.LightmapTextureManagerAccessor;
 import me.tg.cameramod.mixin.client.MinecraftClientAccessor;
+import me.tg.cameramod.mixin.client.WorldRendererAccessor;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.render.BuiltChunkStorage;
+import net.minecraft.client.render.chunk.ChunkBuilder;
+import net.minecraft.client.render.chunk.ChunkRenderData;
 import net.minecraft.client.gl.Framebuffer;
 import net.minecraft.client.gl.SimpleFramebuffer;
 import net.minecraft.client.gui.DrawContext;
@@ -24,7 +30,6 @@ import net.minecraft.client.option.Perspective;
 import net.minecraft.client.texture.NativeImage;
 import net.minecraft.entity.Entity;
 import net.minecraft.util.Identifier;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.GameRules;
 
 import java.io.BufferedReader;
@@ -53,6 +58,9 @@ public class CameraRenderer {
 
     // Active camera zoom level (set during render pass for FOV override)
     private static float activeZoomLevel = 1.0f;
+
+    // Last good frame from the camera (used when player is too far to render terrain)
+    private static byte[] frozenFrame = null;
 
     // Off image animation state
     private static List<byte[]> offImageFrames;  // null = not loaded yet
@@ -189,12 +197,54 @@ public class CameraRenderer {
     // Bound camera UUID — synced from server via packet
     private static UUID boundCameraUuid = null;
 
+    // Streaming toggle: when false, always show off image regardless of camera state
+    private static boolean streamingEnabled = false;
+
+    // Gamerule values synced from server (type=3 cameraSeesChat, type=4 cameraFlipped)
+    private static boolean cameraSeesChatSynced = false;
+    private static boolean cameraFlippedSynced = false;
+
     public static void setBoundCamera(UUID cameraUuid) {
         boundCameraUuid = cameraUuid;
     }
 
     public static void clearBoundCamera() {
         boundCameraUuid = null;
+        frozenFrame = null;
+    }
+
+    public static void setStreamingEnabled(boolean enabled) {
+        streamingEnabled = enabled;
+    }
+
+    public static boolean isStreamingEnabled() {
+        return streamingEnabled;
+    }
+
+    public static void setCameraSeesChat(boolean value) {
+        cameraSeesChatSynced = value;
+    }
+
+    public static void setCameraFlipped(boolean value) {
+        cameraFlippedSynced = value;
+    }
+
+    // Flag: set when this frame should capture player POV at RETURN of render()
+    private static boolean capturePlayerPov = false;
+
+    /**
+     * Called at RETURN of GameRenderer.render() — captures player POV when no camera is bound.
+     */
+    public static void onFrameFinished() {
+        if (!capturePlayerPov) return;
+        capturePlayerPov = false;
+
+        if (!SoftCam.isInitialized() || Cameramod.softcamCamera == null) return;
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.getFramebuffer() == null) return;
+
+        boolean flipped = getGameruleBool(Cameramod.CAMERA_FLIPPED);
+        captureFramebuffer(mc.getFramebuffer(), Cameramod.camwidth, Cameramod.camheight, flipped);
     }
 
     public static void onFrameRendered(GameRenderer gameRenderer, RenderTickCounter tickCounter) {
@@ -213,9 +263,27 @@ public class CameraRenderer {
         }
         if (CameramodClient.isCamera) return;
 
-        Entity camera = getActiveCamera(mc);
-        if (camera == null) {
+        // Streaming disabled → always show off image
+        if (!streamingEnabled) {
             sendOffImage();
+            return;
+        }
+
+        // No camera bound → schedule player POV capture at end of this frame
+        if (boundCameraUuid == null) {
+            capturePlayerPov = true;
+            return;
+        }
+
+        // Try to find the real camera entity in the client world
+        Entity camera = findRealCamera(mc);
+        if (camera == null) {
+            // Camera entity not found (player too far) — send frozen frame
+            if (frozenFrame != null) {
+                SoftCam.sendFrame(Cameramod.softcamCamera, frozenFrame);
+            } else {
+                sendOffImage();
+            }
             return;
         }
 
@@ -228,11 +296,6 @@ public class CameraRenderer {
 
         rendering = true;
 
-        // --- save state ---
-        // Only save/restore what the camera pass changes directly.
-        // No need to restore frustum, fog, lightmap etc. because the camera pass
-        // runs BEFORE the player render (HEAD of render()), so the player's
-        // renderWorld() overwrites all that state afterward.
         Entity savedCameraEntity = mc.getCameraEntity();
         MinecraftClientAccessor accessor = (MinecraftClientAccessor) mc;
         Framebuffer mainFbo = accessor.cameramod$getFramebuffer();
@@ -260,7 +323,42 @@ public class CameraRenderer {
                 camAccessor.cameramod$setLastCameraY(savedCamLastCameraY);
             }
 
+            // Replace the built chunks list with ALL loaded chunk sections so the
+            // camera can render chunks in any direction, not just the player's frustum.
+            // setupTerrain is still skipped (via mixin) to prevent async corruption.
+            WorldRendererAccessor wrAccessor = (WorldRendererAccessor) mc.worldRenderer;
+            ObjectArrayList<ChunkBuilder.BuiltChunk> builtChunks = wrAccessor.cameramod$getBuiltChunks();
+            ObjectArrayList<ChunkBuilder.BuiltChunk> nearbyChunks = wrAccessor.cameramod$getNearbyChunks();
+            BuiltChunkStorage chunkStorage = wrAccessor.cameramod$getChunkStorage();
+
+            // Save the player's chunk lists
+            ChunkBuilder.BuiltChunk[] savedBuilt = builtChunks.toArray(new ChunkBuilder.BuiltChunk[0]);
+            ChunkBuilder.BuiltChunk[] savedNearby = nearbyChunks.toArray(new ChunkBuilder.BuiltChunk[0]);
+
+            // Fill with all chunk sections that have render data
+            builtChunks.clear();
+            nearbyChunks.clear();
+            if (chunkStorage != null) {
+                for (ChunkBuilder.BuiltChunk chunk : chunkStorage.chunks) {
+                    if (chunk != null && chunk.getCurrentRenderData() != ChunkRenderData.HIDDEN) {
+                        builtChunks.add(chunk);
+                    }
+                }
+            }
+
             gameRenderer.renderWorld(tickCounter);
+
+            // Re-dirty the lightmap so the player's renderWorld() recomputes it
+            // (the camera pass consumed the dirty flag, leaving the player's pass
+            // with a lightmap computed for the camera entity's position)
+            ((LightmapTextureManagerAccessor) mc.gameRenderer.getLightmapTextureManager())
+                    .cameramod$setDirty(true);
+
+            // Restore the player's chunk lists
+            builtChunks.clear();
+            builtChunks.addElements(0, savedBuilt);
+            nearbyChunks.clear();
+            nearbyChunks.addElements(0, savedNearby);
 
             // Save camera's cameraY state for next frame
             savedCamCameraY = camAccessor.cameramod$getCameraY();
@@ -270,12 +368,12 @@ public class CameraRenderer {
             camAccessor.cameramod$setLastCameraY(playerLastCameraY);
 
             // Render chat overlay into the offscreen FBO if cameraSeesChat is enabled
-            if (getGameruleBool(mc, Cameramod.CAMERA_SEES_CHAT)) {
+            if (getGameruleBool(Cameramod.CAMERA_SEES_CHAT)) {
                 renderChatOverlay(mc, gameRenderer, w, h);
             }
 
             // Check cameraFlipped gamerule via integrated server (or default false)
-            boolean flipped = getGameruleBool(mc, Cameramod.CAMERA_FLIPPED);
+            boolean flipped = getGameruleBool(Cameramod.CAMERA_FLIPPED);
             captureFramebuffer(offscreenFbo, w, h, flipped);
 
         } catch (Exception e) {
@@ -289,15 +387,17 @@ public class CameraRenderer {
         }
     }
 
-    private static boolean getGameruleBool(MinecraftClient mc, GameRules.Key<GameRules.BooleanRule> key) {
-        MinecraftServer server = mc.getServer();
-        if (server != null) {
-            return server.getGameRules().getBoolean(key);
-        }
+    private static boolean getGameruleBool(GameRules.Key<GameRules.BooleanRule> key) {
+        if (key == Cameramod.CAMERA_SEES_CHAT) return cameraSeesChatSynced;
+        if (key == Cameramod.CAMERA_FLIPPED) return cameraFlippedSynced;
         return false;
     }
 
-    private static Entity getActiveCamera(MinecraftClient mc) {
+    /**
+     * Find the real camera entity in the client world.
+     * Returns null if the entity is not tracked (player too far away).
+     */
+    private static Entity findRealCamera(MinecraftClient mc) {
         if (boundCameraUuid == null) return null;
 
         for (Entity entity : mc.world.getEntities()) {
@@ -305,6 +405,7 @@ public class CameraRenderer {
                 return entity;
             }
         }
+
         return null;
     }
 
@@ -333,13 +434,18 @@ public class CameraRenderer {
         }
     }
 
-    private static void captureFramebuffer(Framebuffer framebuffer, int width, int height, boolean flipped) {
+    private static void captureFramebuffer(Framebuffer framebuffer, int targetWidth, int targetHeight, boolean flipped) {
         GpuTexture gpuTexture = framebuffer.getColorAttachment();
         if (gpuTexture == null) return;
 
+        // Use actual GPU texture dimensions for the buffer and stride calculation
+        int texWidth = gpuTexture.getWidth(0);
+        int texHeight = gpuTexture.getHeight(0);
+        int pixelSize = gpuTexture.getFormat().pixelSize();
+
         GpuBuffer gpuBuffer = RenderSystem.getDevice().createBuffer(
                 () -> "CameraRenderer buffer", 9,
-                width * height * gpuTexture.getFormat().pixelSize()
+                texWidth * texHeight * pixelSize
         );
 
         var encoder = RenderSystem.getDevice().createCommandEncoder();
@@ -348,10 +454,10 @@ public class CameraRenderer {
                 gpuTexture, gpuBuffer, 0, () -> {
                     try (GpuBuffer.MappedView mappedView = encoder.mapBuffer(gpuBuffer, true, false)) {
                         ByteBuffer src = mappedView.data();
-                        int actualStride = src.capacity() / height;
+                        int srcStride = texWidth * pixelSize;
 
-                        final int sw = Cameramod.camwidth;
-                        final int sh = Cameramod.camheight;
+                        final int sw = targetWidth;
+                        final int sh = targetHeight;
                         final int rowLen = sw * 3;
                         final int frameSize = rowLen * sh;
 
@@ -359,12 +465,15 @@ public class CameraRenderer {
                             frameBytes = new byte[frameSize];
                         Arrays.fill(frameBytes, (byte) 0);
 
-                        for (int y = 0; y < Math.min(height, sh); y++) {
-                            int srcRow = y * actualStride;
+                        for (int y = 0; y < sh; y++) {
+                            // Map target y to source y (nearest-neighbor scaling)
+                            int srcY = y * texHeight / sh;
+                            int srcRowOffset = srcY * srcStride;
                             int dstRow = (sh - 1 - y) * rowLen;
-                            for (int x = 0; x < Math.min(width, sw); x++) {
-                                int si = srcRow + x * 4;
-                                // If flipped, mirror horizontally
+                            for (int x = 0; x < sw; x++) {
+                                // Map target x to source x (nearest-neighbor scaling)
+                                int srcX = x * texWidth / sw;
+                                int si = srcRowOffset + srcX * pixelSize;
                                 int outX = flipped ? (sw - 1 - x) : x;
                                 int di = dstRow + outX * 3;
                                 frameBytes[di]     = src.get(si + 2); // B
@@ -374,6 +483,10 @@ public class CameraRenderer {
                         }
 
                         SoftCam.sendFrame(Cameramod.softcamCamera, frameBytes);
+                        // Save as frozen frame for when player goes too far
+                        if (boundCameraUuid != null) {
+                            frozenFrame = Arrays.copyOf(frameBytes, frameBytes.length);
+                        }
                     } catch (Exception e) {
                         e.printStackTrace();
                     } finally {

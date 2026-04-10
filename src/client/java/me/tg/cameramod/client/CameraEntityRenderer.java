@@ -4,10 +4,9 @@ import me.tg.cameramod.Cameramod;
 import me.tg.cameramod.CameraEntity;
 import net.minecraft.client.render.entity.EntityRendererFactory;
 import net.minecraft.client.render.entity.LivingEntityRenderer;
-import net.minecraft.client.render.entity.state.LivingEntityRenderState;
 import net.minecraft.util.Identifier;
 
-public class CameraEntityRenderer extends LivingEntityRenderer<CameraEntity, LivingEntityRenderState, CameraEntityModel> {
+public class CameraEntityRenderer extends LivingEntityRenderer<CameraEntity, CameraEntityRenderState, CameraEntityModel> {
 
     private static final Identifier TEXTURE = Identifier.of(Cameramod.MOD_ID, "textures/entity/camera.png");
 
@@ -16,12 +15,21 @@ public class CameraEntityRenderer extends LivingEntityRenderer<CameraEntity, Liv
     }
 
     @Override
-    public LivingEntityRenderState createRenderState() {
-        return new LivingEntityRenderState();
+    public CameraEntityRenderState createRenderState() {
+        return new CameraEntityRenderState();
     }
 
     @Override
-    public Identifier getTexture(LivingEntityRenderState state) {
+    public void updateRenderState(CameraEntity entity, CameraEntityRenderState state, float tickDelta) {
+        super.updateRenderState(entity, state, tickDelta);
+        state.zoomLevel = entity.getZoomLevel();
+        // Show legs when the camera is on a surface (block below).
+        // Hide legs when floating in air (moved there by mover, or falling).
+        state.showLegs = entity.hasBlockBelow();
+    }
+
+    @Override
+    public Identifier getTexture(CameraEntityRenderState state) {
         return TEXTURE;
     }
 }

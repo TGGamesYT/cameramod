@@ -10,7 +10,9 @@
     "DebugRendererMixin",
     "GameRendererAccessor",
     "GameRendererMixin",
+    "LightmapTextureManagerAccessor",
     "MinecraftClientAccessor",
+    "MouseMixin",
     "WorldRendererAccessor",
     "WorldRendererMixin"
   ],

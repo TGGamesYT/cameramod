@@ -24,6 +24,12 @@ public class GameRendererMixin {
         CameraRenderer.onFrameRendered((GameRenderer) (Object) this, tickCounter);
     }
 
+    // Capture player POV AFTER the frame is fully rendered (for when no camera is bound)
+    @Inject(method = "render", at = @At("RETURN"))
+    private void cameramod$afterRender(RenderTickCounter tickCounter, boolean tick, CallbackInfo ci) {
+        CameraRenderer.onFrameFinished();
+    }
+
     @Inject(method = "renderHand", at = @At("HEAD"), cancellable = true)
     private void cameramod$skipRenderHand(float tickProgress, boolean sleeping, Matrix4f positionMatrix, CallbackInfo ci) {
         if (CameraRenderer.isRendering()) ci.cancel();

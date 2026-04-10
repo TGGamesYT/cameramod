@@ -15,11 +15,16 @@
 
   "item.cameramod.camera_mover": "Camera Mover",
   "item.cameramod.camera_mover.tooltip.1": "Makes a camera follow you.",
-  "item.cameramod.camera_mover.tooltip.2": "Right-click a camera to start.",
+  "item.cameramod.camera_mover.tooltip.2": "Right-click a camera to start. Scroll to adjust distance.",
   "item.cameramod.camera_mover.tooltip.3": "Right-click air to stop.",
 
   "item.cameramod.camera_fixer": "Camera Fixer",
   "item.cameramod.camera_fixer.tooltip.1": "Locks a camera onto an entity.",
   "item.cameramod.camera_fixer.tooltip.2": "Shift+click camera to select, then click entity.",
-  "item.cameramod.camera_fixer.tooltip.3": "Click a camera to un-fix it."
+  "item.cameramod.camera_fixer.tooltip.3": "Click a camera to toggle tracking you.",
+
+  "item.cameramod.camera_zoomer": "Camera Zoomer",
+  "item.cameramod.camera_zoomer.tooltip.1": "Adjusts a camera's zoom level.",
+  "item.cameramod.camera_zoomer.tooltip.2": "Shift+click a camera to set target.",
+  "item.cameramod.camera_zoomer.tooltip.3": "Hold shift + scroll to adjust zoom."
 }

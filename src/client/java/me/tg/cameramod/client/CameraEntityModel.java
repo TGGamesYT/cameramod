@@ -2,15 +2,20 @@ package me.tg.cameramod.client;
 
 import net.minecraft.client.model.*;
 import net.minecraft.client.render.entity.model.EntityModel;
-import net.minecraft.client.render.entity.state.LivingEntityRenderState;
 
-public class CameraEntityModel extends EntityModel<LivingEntityRenderState> {
+public class CameraEntityModel extends EntityModel<CameraEntityRenderState> {
     private final ModelPart head;
+    private final ModelPart leg1;
+    private final ModelPart leg2;
+    private final ModelPart leg3;
 
     public CameraEntityModel(ModelPart root) {
         super(root);
         ModelPart bbMain = root.getChild("bb_main");
         this.head = bbMain.getChild("head");
+        this.leg1 = bbMain.getChild("cube_r1");
+        this.leg2 = bbMain.getChild("cube_r2");
+        this.leg3 = bbMain.getChild("cube_r3");
     }
 
     public static TexturedModelData getTexturedModelData() {
@@ -46,11 +51,18 @@ public class CameraEntityModel extends EntityModel<LivingEntityRenderState> {
     }
 
     @Override
-    public void setAngles(LivingEntityRenderState state) {
+    public void setAngles(CameraEntityRenderState state) {
         super.setAngles(state);
         // Rotate head to match entity's look direction
-        // relativeHeadYaw is already relative to bodyYaw
         this.head.yaw = state.relativeHeadYaw * ((float) Math.PI / 180.0F);
         this.head.pitch = state.pitch * ((float) Math.PI / 180.0F);
+
+        // Stretch head along Z axis based on zoom level
+        this.head.zScale = Math.max(state.zoomLevel, 0.25f);
+
+        // Show/hide tripod legs
+        this.leg1.visible = state.showLegs;
+        this.leg2.visible = state.showLegs;
+        this.leg3.visible = state.showLegs;
     }
 }
