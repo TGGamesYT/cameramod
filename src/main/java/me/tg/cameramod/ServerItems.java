@@ -799,13 +799,21 @@ public class ServerItems {
             UUID userId = user.getUuid();
 
             if (entity instanceof CameraEntity cam) {
-                // Click camera: select it for attachment, or detach if already attached
-                if (cam.getAttachTargetUuid() != null) {
-                    cam.setAttachTargetUuid(null);
-                    user.sendMessage(Text.literal("Camera detached"), true);
-                } else {
+                if (user.isSneaking()) {
+                    // Shift+click camera: select for attaching to another entity
                     CAMERA_FIXER_SELECTION.put(userId, cam.getUuid());
                     user.sendMessage(Text.literal("Camera selected. Now click an entity to attach to."), true);
+                } else {
+                    // Normal click camera: toggle attach to clicking player
+                    if (cam.getAttachTargetUuid() != null && cam.getAttachTargetUuid().equals(user.getUuid())) {
+                        cam.setAttachTargetUuid(null);
+                        user.sendMessage(Text.literal("Camera detached"), true);
+                    } else {
+                        Vec3d offset = cam.getPos().subtract(user.getPos());
+                        cam.setAttachTargetUuid(user.getUuid());
+                        cam.setAttachOffset(offset);
+                        user.sendMessage(Text.literal("Camera now follows you"), true);
+                    }
                 }
                 return ActionResult.SUCCESS;
             }
@@ -857,20 +865,26 @@ public class ServerItems {
                 return ActionResult.SUCCESS;
             }
 
-            // Raycast camera: select or detach
+            // Raycast camera: shift+click = select, normal click = toggle attach to self
             if (hit instanceof CameraEntity cam) {
-                if (cam.getAttachTargetUuid() != null) {
-                    cam.setAttachTargetUuid(null);
-                    user.sendMessage(Text.literal("Camera detached"), true);
-                } else {
+                if (user.isSneaking()) {
                     CAMERA_FIXER_SELECTION.put(userId, cam.getUuid());
                     user.sendMessage(Text.literal("Camera selected. Now click an entity to attach to."), true);
+                } else {
+                    if (cam.getAttachTargetUuid() != null && cam.getAttachTargetUuid().equals(user.getUuid())) {
+                        cam.setAttachTargetUuid(null);
+                        user.sendMessage(Text.literal("Camera detached"), true);
+                    } else {
+                        Vec3d offset = cam.getPos().subtract(user.getPos());
+                        cam.setAttachTargetUuid(user.getUuid());
+                        cam.setAttachOffset(offset);
+                        user.sendMessage(Text.literal("Camera now follows you"), true);
+                    }
                 }
                 return ActionResult.SUCCESS;
             }
 
-            user.sendMessage(Text.literal("Click a camera to select, then click an entity to attach"), true);
-            return ActionResult.SUCCESS;
+            return ActionResult.PASS;
         }
     }
 

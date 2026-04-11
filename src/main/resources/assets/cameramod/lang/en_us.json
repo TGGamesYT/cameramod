@@ -26,5 +26,14 @@
   "item.cameramod.camera_zoomer": "Camera Zoomer",
   "item.cameramod.camera_zoomer.tooltip.1": "Adjusts a camera's zoom level.",
   "item.cameramod.camera_zoomer.tooltip.2": "Shift+click a camera to set target.",
-  "item.cameramod.camera_zoomer.tooltip.3": "Hold shift + scroll to adjust zoom."
+  "item.cameramod.camera_zoomer.tooltip.3": "Hold shift + scroll to adjust zoom.",
+
+  "item.cameramod.camera_gravity": "Camera Gravity",
+  "item.cameramod.camera_gravity.tooltip.1": "Toggles gravity on a camera.",
+  "item.cameramod.camera_gravity.tooltip.2": "Right-click a camera to toggle.",
+
+  "item.cameramod.camera_attacher": "Camera Attacher",
+  "item.cameramod.camera_attacher.tooltip.1": "Attaches a camera to an entity.",
+  "item.cameramod.camera_attacher.tooltip.2": "Click a camera to attach it to you.",
+  "item.cameramod.camera_attacher.tooltip.3": "Shift+click camera, then click entity."
 }

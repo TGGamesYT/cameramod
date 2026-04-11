@@ -39,20 +39,4 @@ public class WorldRendererMixin {
         }
     }
 
-    // Skip sky rendering during camera pass to prevent sky state from leaking
-    // into the player's view (causes jitter during sunrise/sunset transitions)
-    @Inject(method = "renderSky", at = @At("HEAD"), cancellable = true)
-    private void cameramod$skipSkyForCamera(CallbackInfo ci) {
-        if (CameraRenderer.isRendering()) {
-            ci.cancel();
-        }
-    }
-
-    // Skip weather rendering during camera pass (same reason)
-    @Inject(method = "renderWeather", at = @At("HEAD"), cancellable = true)
-    private void cameramod$skipWeatherForCamera(CallbackInfo ci) {
-        if (CameraRenderer.isRendering()) {
-            ci.cancel();
-        }
-    }
 }
