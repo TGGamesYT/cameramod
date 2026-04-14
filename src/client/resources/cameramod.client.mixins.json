@@ -4,10 +4,12 @@
   "package": "me.tg.cameramod.mixin.client",
   "compatibilityLevel": "JAVA_21",
   "client": [
+    "AtmosphericFogModifierAccessor",
     "CameraAccessor",
     "CloudRendererAccessor",
     "CloudRendererMixin",
     "DebugRendererMixin",
+    "FogRendererAccessor",
     "GameRendererAccessor",
     "GameRendererMixin",
     "LightmapTextureManagerAccessor",

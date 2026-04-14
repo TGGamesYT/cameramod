@@ -30,6 +30,9 @@ public class CameramodClient implements ClientModInitializer {
     public static boolean moverActive = false;
     public static boolean zoomerActive = false;
 
+    // Smoothed target height for fixer "Look At" mode (lerps during sneak transitions)
+    private static final java.util.HashMap<java.util.UUID, Float> smoothedTargetHeight = new java.util.HashMap<>();
+
     @Override
     public void onInitializeClient() {
         // Initialize SoftCam on the client side only (not on dedicated servers)
@@ -116,9 +119,17 @@ public class CameramodClient implements ClientModInitializer {
                     pitch = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastPitch, target.getPitch());
                 } else {
                     // Look At mode: face toward target
+                    // Smooth the height offset to avoid jumps during sneak transitions
+                    float desiredHeight = target.isSneaking() ? target.getHeight() * 0.625f : target.getHeight() * 0.725f;
+                    java.util.UUID camId = cam.getUuid();
+                    float currentSmoothed = smoothedTargetHeight.getOrDefault(camId, desiredHeight);
+                    float lerpSpeed = 0.15f;
+                    currentSmoothed += (desiredHeight - currentSmoothed) * lerpSpeed;
+                    smoothedTargetHeight.put(camId, currentSmoothed);
+
                     double tx = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastRenderX, target.getX());
                     double ty = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastRenderY, target.getY())
-                            + target.getStandingEyeHeight() - 0.15;
+                            + currentSmoothed;
                     double tz = net.minecraft.util.math.MathHelper.lerp(tickDelta, target.lastRenderZ, target.getZ());
                     double cx = net.minecraft.util.math.MathHelper.lerp(tickDelta, cam.lastRenderX, cam.getX());
                     double cy = net.minecraft.util.math.MathHelper.lerp(tickDelta, cam.lastRenderY, cam.getY())

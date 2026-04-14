@@ -11,6 +11,10 @@ import me.tg.cameramod.mixin.client.GameRendererAccessor;
 import me.tg.cameramod.mixin.client.LightmapTextureManagerAccessor;
 import me.tg.cameramod.mixin.client.MinecraftClientAccessor;
 import me.tg.cameramod.mixin.client.WorldRendererAccessor;
+import me.tg.cameramod.mixin.client.FogRendererAccessor;
+import me.tg.cameramod.mixin.client.AtmosphericFogModifierAccessor;
+import net.minecraft.client.render.fog.AtmosphericFogModifier;
+import net.minecraft.client.render.fog.FogModifier;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.render.BuiltChunkStorage;
@@ -346,7 +350,24 @@ public class CameraRenderer {
                 }
             }
 
+            // Save fog state before camera pass (fogMultiplier is direction-dependent
+            // and lerps over time — camera pass would corrupt it for the player's view)
+            float savedFogMultiplier = 0f;
+            AtmosphericFogModifierAccessor fogModAccess = null;
+            for (FogModifier mod : FogRendererAccessor.cameramod$getFogModifiers()) {
+                if (mod instanceof AtmosphericFogModifier) {
+                    fogModAccess = (AtmosphericFogModifierAccessor) mod;
+                    savedFogMultiplier = fogModAccess.cameramod$getFogMultiplier();
+                    break;
+                }
+            }
+
             gameRenderer.renderWorld(tickCounter);
+
+            // Restore fog state so player's render pass isn't affected
+            if (fogModAccess != null) {
+                fogModAccess.cameramod$setFogMultiplier(savedFogMultiplier);
+            }
 
             // Re-dirty the lightmap so the player's renderWorld() recomputes it
             // (the camera pass consumed the dirty flag, leaving the player's pass
