@@ -81,7 +81,7 @@ echo if exist "%%MARKER%%" del /f "%%MARKER%%" 2^>nul
 echo if exist "%%DLL%%" del /f "%%DLL%%" 2^>nul
 echo if exist "%%INSTALLER%%" del /f "%%INSTALLER%%" 2^>nul
 echo.
-echo powershell -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Virtual camera unregistered. Please restart your computer to apply the changes.', 'Minecraft Virtualcam', 'OK', 'Information')"
+echo powershell -Command "Add-Type -AssemblyName PresentationFramework; $r = [System.Windows.MessageBox]::Show('Virtual camera unregistered. Restart your computer to apply changes. Restart now?', 'Minecraft Virtualcam', 'YesNo', 'Information'); if ($r -eq 'Yes') { Restart-Computer -Force }"
 )
 
 echo ==============================
