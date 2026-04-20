@@ -37,12 +37,6 @@ echo Building softcam DLL (x86)...
 echo ==============================
 msbuild softcam\src\softcam\softcam.vcxproj /p:Configuration=Release /p:Platform=Win32
 
-echo ==============================
-echo Building installer (x64)...
-echo ==============================
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
-msbuild softcam\examples\softcam_installer\softcam_installer.sln /p:Configuration=Release
-
 :: ==============================
 :: Prepare output folders
 :: ==============================
@@ -55,11 +49,9 @@ mkdir src\main\resources\natives\windows-x86 2>nul
 
 :: x64
 copy /y softcam\src\softcam\x64\Release\softcam.dll src\main\resources\natives\windows-x64\
-copy /y softcam\examples\softcam_installer\x64\Release\softcam_installer.exe src\main\resources\natives\windows-x64\
 
 :: x86
 copy /y softcam\src\softcam\Win32\Release\softcam.dll src\main\resources\natives\windows-x86\
-copy /y softcam\examples\softcam_installer\x64\Release\softcam_installer.exe src\main\resources\natives\windows-x86\
 
 :: ==============================
 :: Generate uninstall_camera.bat
@@ -68,8 +60,10 @@ echo Generating uninstall_camera.bat...
 
 > src\main\resources\natives\uninstall_camera.bat (
 echo @echo off
-echo REM Uninstalls the Minecraft Virtualcam COM driver and cleans up
-echo REM Run this script as Administrator if unregister fails.
+echo if "%%1"=="hidden" goto :main
+echo powershell -WindowStyle Hidden -Command "Start-Process '%%~f0' 'hidden' -Wait"
+echo exit /b
+echo :main
 echo setlocal
 echo.
 echo set "DIR=%%~dp0"
@@ -77,47 +71,17 @@ echo set "DLL=%%DIR%%softcam.dll"
 echo set "INSTALLER=%%DIR%%softcam_installer.exe"
 echo set "MARKER=%%DIR%%.softcam_registered"
 echo.
-echo echo Minecraft Virtualcam Uninstaller
-echo echo =================================
-echo echo.
-echo.
-echo if exist "%%INSTALLER%%" ^(
-echo     echo Unregistering COM driver...
-echo     "%%INSTALLER%%" unregister "%%DLL%%"
-echo     if %%errorlevel%% neq 0 ^(
-echo         echo WARNING: Installer unregister failed, trying regsvr32...
-echo         regsvr32 /u /s "%%DLL%%"
-echo     ^)
-echo ^) else ^(
-echo     echo Installer not found, trying regsvr32...
-echo     regsvr32 /u /s "%%DLL%%"
+echo powershell -Command "try { Start-Process regsvr32 -ArgumentList '/u /s \"%%DLL%%\"' -Verb runAs -Wait } catch { exit 1 }"
+echo if %%errorlevel%% neq 0 ^(
+echo     powershell -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Unregistration failed or was cancelled. No changes made.', 'Minecraft Virtualcam', 'OK', 'Error')"
+echo     exit /b 1
 echo ^)
 echo.
-echo echo.
+echo if exist "%%MARKER%%" del /f "%%MARKER%%" 2^>nul
+echo if exist "%%DLL%%" del /f "%%DLL%%" 2^>nul
+echo if exist "%%INSTALLER%%" del /f "%%INSTALLER%%" 2^>nul
 echo.
-echo if exist "%%MARKER%%" ^(
-echo     del /f "%%MARKER%%" 2^>nul
-echo     echo Deleted registration marker.
-echo ^)
-echo.
-echo if exist "%%DLL%%" ^(
-echo     del /f "%%DLL%%" 2^>nul
-echo     if exist "%%DLL%%" ^(
-echo         echo WARNING: Could not delete softcam.dll - it may still be in use.
-echo     ^) else ^(
-echo         echo Deleted softcam.dll
-echo     ^)
-echo ^)
-echo.
-echo if exist "%%INSTALLER%%" ^(
-echo     del /f "%%INSTALLER%%" 2^>nul
-echo     echo Deleted softcam_installer.exe
-echo ^)
-echo.
-echo echo.
-echo echo Uninstall complete.
-echo echo You can delete this folder: %%DIR%%
-echo pause
+echo powershell -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Virtual camera unregistered. Please restart your computer to apply the changes.', 'Minecraft Virtualcam', 'OK', 'Information')"
 )
 
 echo ==============================

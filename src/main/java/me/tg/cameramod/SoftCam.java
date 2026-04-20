@@ -1,9 +1,6 @@
 package me.tg.cameramod;
 
 import com.sun.jna.*;
-import com.sun.jna.platform.win32.Shell32;
-import com.sun.jna.platform.win32.WinDef.HWND;
-import com.sun.jna.platform.win32.WinDef.INT_PTR;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -12,7 +9,7 @@ import java.nio.file.Files;
 
 /**
  * JNA wrapper for the Softcam virtual camera driver.
- * Extracts native DLL + installer to APPDATA, registers the COM driver once,
+ * Extracts native DLL to APPDATA, registers the COM driver via regsvr32 once,
  * then provides a clean Java API for creating cameras and sending frames.
  */
 public class SoftCam {
@@ -63,15 +60,31 @@ public class SoftCam {
             }
 
             File dllFile = extractResource("/natives/" + subdir + "/softcam.dll", "softcam.dll");
-            File installerFile = extractResource("/natives/" + subdir + "/softcam_installer.exe", "softcam_installer.exe");
-            extractResource("/natives/uninstall_camera.bat", "uninstall_camera.bat");
+            syncResource("/natives/uninstall_camera.bat", "uninstall_camera.bat");
+
+            File oldInstaller = new File(NATIVE_DIR, "softcam_installer.exe");
+            if (oldInstaller.exists() && oldInstaller.delete()) {
+                LOGGER.info("Deleted leftover softcam_installer.exe from appdata");
+            }
 
             if (!REGISTERED_MARKER.exists()) {
-                LOGGER.info("Softcam driver not registered. Running installer with UAC...");
-                runAsAdmin(installerFile.getAbsolutePath(),
-                        "register \"" + dllFile.getAbsolutePath() + "\"");
-                if (!REGISTERED_MARKER.createNewFile()) {
-                    LOGGER.warn("Could not create registration marker file");
+                LOGGER.info("Softcam driver not registered. Registering via regsvr32...");
+                int exitCode = new ProcessBuilder(
+                        "powershell",
+                        "-Command",
+                        "try { Start-Process regsvr32 -ArgumentList '/s \"" + dllFile.getAbsolutePath() + "\"' -Verb runAs -Wait } catch { exit 1 }"
+                ).start().waitFor();
+                if (exitCode == 0) {
+                    if (!REGISTERED_MARKER.createNewFile()) {
+                        LOGGER.warn("Could not create registration marker file");
+                    }
+                    new ProcessBuilder(
+                            "powershell",
+                            "-Command",
+                            "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Virtual camera registered. Please restart your computer to apply the changes.', 'Minecraft Virtualcam', 'OK', 'Information')"
+                    ).start();
+                } else {
+                    LOGGER.warn("Regsvr32 registration was denied or failed (exit code {})", exitCode);
                 }
             }
 
@@ -149,12 +162,16 @@ public class SoftCam {
         return outFile;
     }
 
-    private static void runAsAdmin(String exePath, String args) {
-        LOGGER.info("UAC elevation: {} {}", exePath, args);
-        INT_PTR result = Shell32.INSTANCE.ShellExecute(
-                (HWND) null, "runas", exePath, args, null, 1 /* SW_SHOWNORMAL */);
-        if (result.intValue() <= 32) {
-            throw new RuntimeException("ShellExecute failed with code " + result.intValue());
+    private static void syncResource(String resourcePath, String filename) throws IOException {
+        File outFile = new File(NATIVE_DIR, filename);
+        try (InputStream in = SoftCam.class.getResourceAsStream(resourcePath)) {
+            if (in == null) throw new FileNotFoundException("Resource not found in jar: " + resourcePath);
+            byte[] jarBytes = in.readAllBytes();
+            if (!outFile.exists() || !java.util.Arrays.equals(jarBytes, Files.readAllBytes(outFile.toPath()))) {
+                Files.write(outFile.toPath(), jarBytes);
+                LOGGER.info("Updated {} in appdata", filename);
+            }
         }
     }
+
 }

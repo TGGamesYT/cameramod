@@ -26,7 +26,7 @@ This is a minecraft mod for *1.21.8 Fabric*, which registers a *virtual camera* 
 ## Setup
 - Download the latest version of the mod from [here](https://github.com/tggamesyt/cameramod/releases/latest)
 - Open the game with the mod, 1.21.8 fabric.
-- When prompted, allow ```softcam_installer.exe``` to run, this registers the virtual webcam.
+- When prompted, allow ```Microsoft® Register Server``` to run, this registers the virtual webcam.
 - Restart your computer
 
 to unregister the webcam, run ```%appdata%/.minecraft_cameramod/uninstall_camera.bat```
@@ -36,5 +36,5 @@ Once you have the *virtual camera* registered, you can just go into a world, pla
 I also added some utility items for rotating and moving the camera around.
 
 ## Development notice
-when cloning the repo, if you wish to rebuild the natives (dll-s and exe-s) from softcam, use ```--recurse-submodules```.
+when cloning the repo, if you wish to rebuild the natives (dll-s) from softcam, use ```--recurse-submodules```.
 to rebuild the ```src/main/resources/natives```, run ```.\build_softcam.bat``` with **VS 2022** and **Windows SDK** installed.
