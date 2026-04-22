@@ -809,9 +809,8 @@ public class ServerItems {
                         cam.setAttachTargetUuid(null);
                         user.sendMessage(Text.literal("Camera detached"), true);
                     } else {
-                        Vec3d offset = cam.getPos().subtract(user.getPos());
                         cam.setAttachTargetUuid(user.getUuid());
-                        cam.setAttachOffset(offset);
+                        cam.setAttachOffset(cam.getPos().subtract(user.getPos()));
                         user.sendMessage(Text.literal("Camera now follows you"), true);
                     }
                 }
@@ -824,9 +823,8 @@ public class ServerItems {
                 ServerWorld world = (ServerWorld) user.getWorld();
                 Entity camEntity = world.getEntity(selectedCamUuid);
                 if (camEntity instanceof CameraEntity cam) {
-                    Vec3d offset = cam.getPos().subtract(entity.getPos());
                     cam.setAttachTargetUuid(entity.getUuid());
-                    cam.setAttachOffset(offset);
+                    cam.setAttachOffset(cam.getPos().subtract(entity.getPos()));
                     CAMERA_FIXER_SELECTION.remove(userId);
                     user.sendMessage(Text.literal("Camera attached to " + entity.getName().getString()), true);
                     return ActionResult.SUCCESS;
@@ -852,9 +850,8 @@ public class ServerItems {
                     ServerWorld sw = (ServerWorld) world;
                     Entity camEntity = sw.getEntity(selectedCamUuid);
                     if (camEntity instanceof CameraEntity cam) {
-                        Vec3d offset = cam.getPos().subtract(hit.getPos());
                         cam.setAttachTargetUuid(hit.getUuid());
-                        cam.setAttachOffset(offset);
+                        cam.setAttachOffset(cam.getPos().subtract(hit.getPos()));
                         CAMERA_FIXER_SELECTION.remove(userId);
                         user.sendMessage(Text.literal("Camera attached to " + hit.getName().getString()), true);
                         return ActionResult.SUCCESS;
@@ -875,13 +872,44 @@ public class ServerItems {
                         cam.setAttachTargetUuid(null);
                         user.sendMessage(Text.literal("Camera detached"), true);
                     } else {
-                        Vec3d offset = cam.getPos().subtract(user.getPos());
                         cam.setAttachTargetUuid(user.getUuid());
-                        cam.setAttachOffset(offset);
+                        cam.setAttachOffset(cam.getPos().subtract(user.getPos()));
                         user.sendMessage(Text.literal("Camera now follows you"), true);
                     }
                 }
                 return ActionResult.SUCCESS;
+            }
+
+            // Shift+click air: toggle attach mode on bound camera
+            if (user.isSneaking()) {
+                UUID camUuid = CAMERA_COMMAND_STORAGE.get(userId);
+                if (camUuid != null) {
+                    ServerWorld sw = (ServerWorld) world;
+                    Entity camEntity = sw.getEntity(camUuid);
+                    if (camEntity instanceof CameraEntity cam && cam.getAttachTargetUuid() != null) {
+                        Entity target = sw.getEntity(cam.getAttachTargetUuid());
+                        if (target != null) {
+                            byte newMode = (byte) ((cam.getAttachMode() + 1) % 2);
+                            Vec3d offset = cam.getAttachOffset();
+                            float yawRad = (float) (target.getYaw() * Math.PI / 180.0);
+                            if (newMode == 1) {
+                                // World-space → local-space (un-rotate by entity yaw)
+                                double localX =  offset.x * Math.cos(yawRad) + offset.z * Math.sin(yawRad);
+                                double localZ = -offset.x * Math.sin(yawRad) + offset.z * Math.cos(yawRad);
+                                cam.setAttachOffset(new Vec3d(localX, offset.y, localZ));
+                            } else {
+                                // Local-space → world-space (rotate by entity yaw)
+                                double worldX = offset.x * Math.cos(yawRad) - offset.z * Math.sin(yawRad);
+                                double worldZ = offset.x * Math.sin(yawRad) + offset.z * Math.cos(yawRad);
+                                cam.setAttachOffset(new Vec3d(worldX, offset.y, worldZ));
+                            }
+                            cam.setAttachMode(newMode);
+                            String modeName = newMode == 0 ? "Relative (world-space)" : "Head (rotates with entity)";
+                            user.sendMessage(Text.literal("Attach mode: " + modeName), true);
+                            return ActionResult.SUCCESS;
+                        }
+                    }
+                }
             }
 
             return ActionResult.PASS;

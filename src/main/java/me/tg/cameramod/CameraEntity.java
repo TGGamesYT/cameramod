@@ -53,6 +53,9 @@ public class CameraEntity extends LivingEntity {
             DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.FLOAT);
     private static final TrackedData<Float> ATTACH_OFFSET_Z =
             DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.FLOAT);
+    // Attach mode: 0 = world-space (fixed relative), 1 = head-space (rotates with entity yaw)
+    private static final TrackedData<Byte> ATTACH_MODE =
+            DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.BYTE);
 
     public static DefaultAttributeContainer.Builder createCameraAttributes() {
         return LivingEntity.createLivingAttributes()
@@ -78,6 +81,7 @@ public class CameraEntity extends LivingEntity {
         builder.add(ATTACH_OFFSET_X, 0.0f);
         builder.add(ATTACH_OFFSET_Y, 0.0f);
         builder.add(ATTACH_OFFSET_Z, 0.0f);
+        builder.add(ATTACH_MODE, (byte) 0);
     }
 
     // --- Zoom ---
@@ -166,7 +170,16 @@ public class CameraEntity extends LivingEntity {
         this.dataTracker.set(ATTACH_OFFSET_Z, (float) offset.z);
     }
 
-    /**
+    // --- Attach mode ---
+    public byte getAttachMode() {
+        return this.dataTracker.get(ATTACH_MODE);
+    }
+
+    public void setAttachMode(byte mode) {
+        this.dataTracker.set(ATTACH_MODE, mode);
+    }
+
+/**
      * Check if there's a solid block directly below the camera's feet.
      * Uses the entity's actual Y coordinate (minus a small epsilon) to avoid
      * false positives when the entity is floating half a block above ground.
@@ -213,10 +226,25 @@ public class CameraEntity extends LivingEntity {
                 net.minecraft.entity.Entity attachTarget = sw.getEntity(attachUuid);
                 if (attachTarget != null) {
                     Vec3d offset = getAttachOffset();
+                    double wx, wz;
+                    if (getAttachMode() == 1) {
+                        // Head mode: rotate local offset by entity yaw
+                        float yawRad = (float) (attachTarget.getYaw() * Math.PI / 180.0);
+                        wx = offset.x * Math.cos(yawRad) - offset.z * Math.sin(yawRad);
+                        wz = offset.x * Math.sin(yawRad) + offset.z * Math.cos(yawRad);
+                        // DO NOT set cam rotation server-side — client owns it (fixer/
+                        // attacher run per-frame). Server rotation broadcasts trigger
+                        // client-side lerpYaw across 3 ticks the long way around the
+                        // circle, fighting our per-frame override and producing
+                        // visible 50°+ swings between frames.
+                    } else {
+                        wx = offset.x;
+                        wz = offset.z;
+                    }
                     this.requestTeleport(
-                            attachTarget.getX() + offset.x,
+                            attachTarget.getX() + wx,
                             attachTarget.getY() + offset.y,
-                            attachTarget.getZ() + offset.z);
+                            attachTarget.getZ() + wz);
                 }
             }
         }
@@ -269,6 +297,7 @@ public class CameraEntity extends LivingEntity {
         this.dataTracker.set(ATTACH_OFFSET_X, view.getFloat("AttachOffsetX", 0.0f));
         this.dataTracker.set(ATTACH_OFFSET_Y, view.getFloat("AttachOffsetY", 0.0f));
         this.dataTracker.set(ATTACH_OFFSET_Z, view.getFloat("AttachOffsetZ", 0.0f));
+        this.dataTracker.set(ATTACH_MODE, view.getByte("AttachMode", (byte) 0));
     }
 
     @Override
@@ -295,6 +324,8 @@ public class CameraEntity extends LivingEntity {
             view.putFloat("AttachOffsetX", (float) offset.x);
             view.putFloat("AttachOffsetY", (float) offset.y);
             view.putFloat("AttachOffsetZ", (float) offset.z);
+            byte attachMode = getAttachMode();
+            if (attachMode != 0) view.putByte("AttachMode", attachMode);
         }
     }
 }

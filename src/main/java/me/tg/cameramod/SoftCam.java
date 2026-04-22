@@ -69,22 +69,18 @@ public class SoftCam {
 
             if (!REGISTERED_MARKER.exists()) {
                 LOGGER.info("Softcam driver not registered. Registering via regsvr32...");
-                int exitCode = new ProcessBuilder(
-                        "powershell",
-                        "-Command",
-                        "try { Start-Process regsvr32 -ArgumentList '/s \"" + dllFile.getAbsolutePath() + "\"' -Verb runAs -Wait } catch { exit 1 }"
+                String dllPath = dllFile.getAbsolutePath();
+                int exitCode = new ProcessBuilder("powershell", "-Command",
+                        "Add-Type -AssemblyName PresentationFramework; " +
+                        "$registered = $false; " +
+                        "do { try { Start-Process regsvr32 -ArgumentList '/s \"" + dllPath + "\"' -Verb runAs -Wait; $registered = $true } " +
+                        "catch { $r = [System.Windows.MessageBox]::Show('Registration was denied or failed. Try again?', 'Minecraft Virtualcam', 'YesNo', 'Warning'); if ($r -ne 'Yes') { break } } } " +
+                        "while (-not $registered); " +
+                        "if ($registered) { $r2 = [System.Windows.MessageBox]::Show('Virtual camera registered. Restart your computer to apply changes. Restart now?', 'Minecraft Virtualcam', 'YesNo', 'Information'); if ($r2 -eq 'Yes') { Restart-Computer -Force }; exit 0 } " +
+                        "else { [System.Windows.MessageBox]::Show('Virtual camera was not registered. Restart Minecraft to try again.', 'Minecraft Virtualcam', 'OK', 'Warning'); exit 1 }"
                 ).start().waitFor();
-                if (exitCode == 0) {
-                    if (!REGISTERED_MARKER.createNewFile()) {
-                        LOGGER.warn("Could not create registration marker file");
-                    }
-                    new ProcessBuilder(
-                            "powershell",
-                            "-Command",
-                            "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Virtual camera registered. Please restart your computer to apply the changes.', 'Minecraft Virtualcam', 'OK', 'Information')"
-                    ).start();
-                } else {
-                    LOGGER.warn("Regsvr32 registration was denied or failed (exit code {})", exitCode);
+                if (exitCode == 0 && !REGISTERED_MARKER.createNewFile()) {
+                    LOGGER.warn("Could not create registration marker file");
                 }
             }
 
