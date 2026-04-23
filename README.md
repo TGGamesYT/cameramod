@@ -22,7 +22,8 @@ This is a minecraft mod for *1.21.8 Fabric*, which registers a *virtual camera* 
 </p>
 
 <sub>Inspired by [Flashz's omegle mod](https://youtube.com/@flashzyt)</sub>
-
+## Notice
+as seen in the custom license, usage of the mod is free, you can download it from github, or [modrinth](https://modrinth.com/mod/virtualcam), but if you want to use it in videos, you have to give credit, and be a paid [patreon](https://patreon.com/tgdoescode), othervise I will take down your video.
 ## Setup
 - Download the latest version of the mod from [here](https://github.com/tggamesyt/cameramod/releases/latest)
 - Open the game with the mod, 1.21.8 fabric.
