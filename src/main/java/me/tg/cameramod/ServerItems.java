@@ -208,8 +208,13 @@ public class ServerItems {
         if (!(entity instanceof CameraEntity cam)) return;
 
         float zoom = cam.getZoomLevel();
-        zoom += delta * 0.25f;
-        zoom = Math.max(0.25f, Math.min(10.0f, zoom));
+        // Below 1.0 (or scrolling DOWN from exactly 1.0) → fine 0.05 steps.
+        // At/above 1.0 scrolling up → coarse 0.25 steps. Min 0.5 (0.25 caused
+        // a flipped image).
+        boolean fine = zoom < 1.0f || (zoom == 1.0f && delta < 0);
+        float step = fine ? 0.05f : 0.25f;
+        zoom += delta * step;
+        zoom = Math.max(0.5f, Math.min(10.0f, zoom));
         cam.setZoomLevel(zoom);
         player.sendMessage(Text.literal("Zoom: " + String.format("%.2f", zoom) + "x"), true);
     }
