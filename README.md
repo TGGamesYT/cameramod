@@ -36,6 +36,8 @@ to unregister the webcam, run ```%appdata%/.minecraft_cameramod/uninstall_camera
 Once you have the *virtual camera* registered, you can just go into a world, place a camera down, and activate it using the camera activator.
 I also added some utility items for rotating and moving the camera around.
 
+<img src="src/main/resources/assets/cameramod/camera_image.png" width="800">
+
 ## Development notice
 when cloning the repo, if you wish to rebuild the natives (dll-s) from softcam, use ```--recurse-submodules```.
 to rebuild the ```src/main/resources/natives```, run ```.\build_softcam.bat``` with **VS 2022** and **Windows SDK** installed.
