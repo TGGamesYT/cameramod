@@ -27,13 +27,15 @@ as seen in the custom license, usage of the mod is free, you can download it fro
 - When prompted, allow ```Microsoft® Register Server``` to run, this registers the virtual webcam.
 - Restart your computer
 
-to unregister the webcam, run ```%appdata%/.minecraft_cameramod/uninstall_camera.bat```
-
 ## Usage
 Once you have the *virtual camera* registered, you can just go into a world, place a camera down, and activate it using the camera activator.
 I also added some utility items for rotating and moving the camera around.
 
 <img src="src/main/resources/assets/cameramod/camera_image.png" width="800">
+
+## Uninstalling
+
+if you no longer want to use this mod and want to unregister the webcam, run ```%appdata%/.minecraft_cameramod/uninstall_camera.bat```
 
 ## Development notice
 when cloning the repo, if you wish to rebuild the natives (dll-s) from softcam, use ```--recurse-submodules```.
