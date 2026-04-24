@@ -92,6 +92,7 @@ public class SoftCam {
     private static void runRegistrationPrompt(String dllPath) {
         try {
             LOGGER.info("Softcam driver not registered. Asking user (background thread)...");
+            String markerPath = REGISTERED_MARKER.getAbsolutePath().replace("'", "''");
             int exitCode = new ProcessBuilder("powershell", "-Command",
                     "Add-Type -AssemblyName PresentationFramework; " +
                     "$ask = [System.Windows.MessageBox]::Show('Install the Minecraft Virtualcam driver? This lets the in-game camera show up as a webcam in OBS, Discord, browsers, etc. Requires admin rights and a system restart.', 'Minecraft Virtualcam', 'YesNo', 'Question'); " +
@@ -100,10 +101,16 @@ public class SoftCam {
                     "do { try { Start-Process regsvr32 -ArgumentList '/s \"" + dllPath + "\"' -Verb runAs -Wait; $registered = $true } " +
                     "catch { $r = [System.Windows.MessageBox]::Show('Registration was denied or failed. Try again?', 'Minecraft Virtualcam', 'YesNo', 'Warning'); if ($r -ne 'Yes') { break } } } " +
                     "while (-not $registered); " +
-                    "if ($registered) { $r2 = [System.Windows.MessageBox]::Show('Virtual camera registered. Restart your computer to apply changes. Restart now?', 'Minecraft Virtualcam', 'YesNo', 'Information'); if ($r2 -eq 'Yes') { Restart-Computer -Force }; exit 0 } " +
+                    "if ($registered) { " +
+                    "  try { New-Item -ItemType File -Path '" + markerPath + "' -Force | Out-Null } catch {}; " +
+                    "  $r2 = [System.Windows.MessageBox]::Show('Virtual camera registered. Restart your computer to apply changes. Restart now?', 'Minecraft Virtualcam', 'YesNo', 'Information'); " +
+                    "  if ($r2 -eq 'Yes') { Start-Sleep -Milliseconds 500; Restart-Computer -Force }; " +
+                    "  exit 0 " +
+                    "} " +
                     "else { [System.Windows.MessageBox]::Show('Virtual camera was not registered. Restart Minecraft to try again.', 'Minecraft Virtualcam', 'OK', 'Warning'); exit 1 }"
             ).start().waitFor();
-            if (exitCode == 0 && !REGISTERED_MARKER.createNewFile()) {
+            // Fallback: create marker from Java side too (in case PS script couldn't write it)
+            if (exitCode == 0 && !REGISTERED_MARKER.exists() && !REGISTERED_MARKER.createNewFile()) {
                 LOGGER.warn("Could not create registration marker file");
             } else if (exitCode == 2) {
                 LOGGER.info("User declined Softcam driver installation. Will ask again next launch.");
