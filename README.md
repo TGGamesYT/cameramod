@@ -31,6 +31,8 @@ as seen in the custom license, usage of the mod is free, you can download it fro
 Once you have the *virtual camera* registered, you can just go into a world, place a camera down, and activate it using the camera activator.
 I also added some utility items for rotating and moving the camera around.
 
+(once in game, go to https://tggamesyt.dev/webcam to quick test it)
+
 <img src="src/main/resources/assets/cameramod/camera_image.png" width="800">
 
 ## Uninstalling
