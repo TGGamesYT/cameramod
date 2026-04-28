@@ -24,8 +24,9 @@ paid [ko-fi](https://ko-fi.com/tgdoescode) supporters always get updates before 
 ## Setup
 [tutorial video](https://www.youtube.com/watch?v=vKy5Mk-164A)
 othervise:
-- Download the latest version of the mod from [here](https://github.com/tggamesyt/cameramod/releases/latest)
+- Download the latest version of the mod from [here](https://github.com/tggamesyt/cameramod/releases/latest) or from [modrinth](https://modrinth.com/mod/virtualcamera)
 - Open the game with the mod, 1.21.8 fabric.
+- Follow the powershell popups' instructions
 - When prompted, allow ```Microsoft® Register Server``` to run, this registers the virtual webcam.
 - Restart your computer
 
