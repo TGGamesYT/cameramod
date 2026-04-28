@@ -20,8 +20,10 @@ This is a minecraft mod for *1.21.8 Fabric*, which registers a *virtual camera* 
 
 <sub>Inspired by [Flashz's omegle mod](https://youtube.com/@flashzyt)</sub>
 ## Notice
-paid [patreon](https://patreon.com/tgdoescode)s always get updates before they go public, and they also get an exclusive screen mod to go along with the cameramod.
+paid [ko-fi](https://ko-fi.com/tgdoescode) supporters always get updates before they go public, and they also get an exclusive screen mod to go along with the cameramod.
 ## Setup
+[tutorial video](https://www.youtube.com/watch?v=vKy5Mk-164A)
+othervise:
 - Download the latest version of the mod from [here](https://github.com/tggamesyt/cameramod/releases/latest)
 - Open the game with the mod, 1.21.8 fabric.
 - When prompted, allow ```Microsoft® Register Server``` to run, this registers the virtual webcam.
