@@ -1,0 +1,70 @@
+package me.tg.cameramod.mixin.client;
+
+import me.tg.cameramod.client.CameraRenderer;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.render.Camera;
+import net.minecraft.client.render.GameRenderer;
+import net.minecraft.client.render.RenderTickCounter;
+import net.minecraft.client.util.math.MatrixStack;
+import org.joml.Matrix4f;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+@Mixin(GameRenderer.class)
+public class GameRendererMixin {
+
+    // Render camera pass BEFORE the player render so the player's renderWorld()
+    // overwrites all state (frustum, fog, lightmap, chunks, etc.), preventing
+    // entity jitter and sky/cloud glitches in the player's view.
+    @Inject(method = "render", at = @At("HEAD"))
+    private void cameramod$beforeRender(RenderTickCounter tickCounter, boolean tick, CallbackInfo ci) {
+        CameraRenderer.onFrameRendered((GameRenderer) (Object) this, tickCounter);
+    }
+
+    // Capture player POV AFTER the frame is fully rendered (for when no camera is bound)
+    @Inject(method = "render", at = @At("RETURN"))
+    private void cameramod$afterRender(RenderTickCounter tickCounter, boolean tick, CallbackInfo ci) {
+        CameraRenderer.onFrameFinished();
+    }
+
+    @Inject(method = "renderHand", at = @At("HEAD"), cancellable = true)
+    private void cameramod$skipRenderHand(float tickProgress, boolean sleeping, Matrix4f positionMatrix, CallbackInfo ci) {
+        if (CameraRenderer.isRendering()) ci.cancel();
+    }
+
+    @Inject(method = "bobView", at = @At("HEAD"), cancellable = true)
+    private void cameramod$skipBobView(MatrixStack matrices, float tickProgress, CallbackInfo ci) {
+        if (CameraRenderer.isRendering()) ci.cancel();
+    }
+
+    @Inject(method = "tiltViewWhenHurt", at = @At("HEAD"), cancellable = true)
+    private void cameramod$skipTiltViewWhenHurt(MatrixStack matrices, float tickProgress, CallbackInfo ci) {
+        if (CameraRenderer.isRendering()) ci.cancel();
+    }
+
+    @Inject(method = "updateCrosshairTarget", at = @At("HEAD"), cancellable = true)
+    private void cameramod$skipUpdateCrosshairTarget(float tickProgress, CallbackInfo ci) {
+        if (CameraRenderer.isRendering()) ci.cancel();
+    }
+
+    @Inject(method = "getFov", at = @At("HEAD"), cancellable = true)
+    private void cameramod$fixedCameraFov(Camera camera, float tickProgress, boolean changingFov, CallbackInfoReturnable<Float> cir) {
+        if (CameraRenderer.isRendering()) {
+            float baseFov = (float) MinecraftClient.getInstance().options.getFov().getValue().intValue();
+            float zoom = CameraRenderer.getActiveZoomLevel();
+            if (zoom > 0.0f) baseFov /= zoom;
+            cir.setReturnValue(baseFov);
+        }
+    }
+
+    // Suppress block outline (hitbox highlight) on camera
+    @Inject(method = "shouldRenderBlockOutline", at = @At("HEAD"), cancellable = true)
+    private void cameramod$skipBlockOutline(CallbackInfoReturnable<Boolean> cir) {
+        if (CameraRenderer.isRendering()) {
+            cir.setReturnValue(false);
+        }
+    }
+}
