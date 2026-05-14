@@ -35,5 +35,10 @@
   "item.cameramod.camera_attacher": "Camera Attacher",
   "item.cameramod.camera_attacher.tooltip.1": "Attaches a camera to an entity.",
   "item.cameramod.camera_attacher.tooltip.2": "Click a camera to attach it to you.",
-  "item.cameramod.camera_attacher.tooltip.3": "Shift+click camera, then click entity."
+  "item.cameramod.camera_attacher.tooltip.3": "Shift+click camera, then click entity.",
+
+  "item.cameramod.camera_remover": "Camera Remover",
+  "item.cameramod.camera_remover.tooltip.1": "Removes cameras.",
+  "item.cameramod.camera_remover.tooltip.2": "Click a camera to remove it.",
+  "item.cameramod.camera_remover.tooltip.3": "third line."
 }

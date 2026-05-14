@@ -1,4 +1,9 @@
 @echo off
+where powershell >nul 2>&1
+if errorlevel 1 (
+    mshta vbscript:msgbox("This script requires PowerShell, which was not found on PATH. Please install PowerShell to uninstall the virtual camera.",16,"Minecraft Virtualcam")(window.close)
+    exit /b 1
+)
 if "%1"=="hidden" goto :main
 powershell -WindowStyle Hidden -Command "Start-Process '%~f0' 'hidden' -Wait"
 exit /b

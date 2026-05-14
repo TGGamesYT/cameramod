@@ -12,13 +12,13 @@
   "environment": "*",
   "entrypoints": {
     "fabric-datagen": [
-      "me.tg.cameramod.client.CameramodDataGenerator"
+      "dev.tggamesyt.cameramod.client.CameramodDataGenerator"
     ],
     "client": [
-      "me.tg.cameramod.client.CameramodClient"
+      "dev.tggamesyt.cameramod.client.CameramodClient"
     ],
     "main": [
-      "me.tg.cameramod.Cameramod"
+      "dev.tggamesyt.cameramod.Cameramod"
     ]
   },
   "mixins": [

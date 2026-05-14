@@ -1,12 +1,13 @@
 {
   "required": true,
   "minVersion": "0.8",
-  "package": "me.tg.cameramod.mixin.client",
+  "package": "dev.tggamesyt.cameramod.mixin.client",
   "compatibilityLevel": "JAVA_21",
   "client": [
     "AtmosphericFogModifierAccessor",
     "CameraAccessor",
     "CameraEntityLerpMixin",
+    "ClientInteractionMixin",
     "CloudRendererAccessor",
     "CloudRendererMixin",
     "DebugRendererMixin",
@@ -16,6 +17,7 @@
     "LightmapTextureManagerAccessor",
     "MinecraftClientAccessor",
     "MouseMixin",
+    "PlayerInventoryMixin",
     "WorldRendererAccessor",
     "WorldRendererMixin"
   ],
