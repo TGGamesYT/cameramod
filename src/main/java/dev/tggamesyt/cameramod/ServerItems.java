@@ -93,6 +93,7 @@ public class ServerItems {
     // Cached gamerule values for change detection
     private static boolean lastCameraSeesChat = false;
     private static boolean lastCameraFlipped = false;
+    private static boolean lastCameraNameTags = true;
 
     // Track force-loaded chunks per camera UUID so we can unload them when camera moves/dies
     private static final HashMap<UUID, Set<Long>> FORCED_CHUNKS = new HashMap<>();
@@ -115,8 +116,10 @@ public class ServerItems {
             // Sync gamerule values to client
             boolean seesChat = server.getGameRules().getBoolean(Cameramod.CAMERA_SEES_CHAT);
             boolean flipped = server.getGameRules().getBoolean(Cameramod.CAMERA_FLIPPED);
+            boolean nameTags = server.getGameRules().getBoolean(Cameramod.CAMERA_NAME_TAGS);
             ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 3, seesChat));
             ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 4, flipped));
+            ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 5, nameTags));
 
             String savedStr = player.getAttached(SAVED_CAMERA_ATTACHMENT);
             if (savedStr != null) {
@@ -930,12 +933,15 @@ public class ServerItems {
         // Sync gamerule changes to all players
         boolean seesChat = server.getGameRules().getBoolean(Cameramod.CAMERA_SEES_CHAT);
         boolean flipped = server.getGameRules().getBoolean(Cameramod.CAMERA_FLIPPED);
-        if (seesChat != lastCameraSeesChat || flipped != lastCameraFlipped) {
+        boolean nameTags = server.getGameRules().getBoolean(Cameramod.CAMERA_NAME_TAGS);
+        if (seesChat != lastCameraSeesChat || flipped != lastCameraFlipped || nameTags != lastCameraNameTags) {
             lastCameraSeesChat = seesChat;
             lastCameraFlipped = flipped;
+            lastCameraNameTags = nameTags;
             for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
                 ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 3, seesChat));
                 ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 4, flipped));
+                ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 5, nameTags));
             }
         }
 
@@ -980,6 +986,13 @@ public class ServerItems {
 
     public static class CameraRemoverItem extends Item {
         public CameraRemoverItem(Settings settings) { super(settings); }
+
+        @Override
+        public void appendTooltip(ItemStack stack, TooltipContext context, TooltipDisplayComponent displayComponent,
+                                  Consumer<Text> textConsumer, TooltipType type) {
+            textConsumer.accept(Text.translatable("item.cameramod.camera_remover.tooltip.1").formatted(Formatting.GRAY));
+            textConsumer.accept(Text.translatable("item.cameramod.camera_remover.tooltip.2").formatted(Formatting.DARK_GRAY));
+        }
 
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {

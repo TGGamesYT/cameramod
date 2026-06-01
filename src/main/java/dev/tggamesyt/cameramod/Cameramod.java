@@ -50,6 +50,9 @@ public class Cameramod implements ModInitializer {
     public static final GameRules.Key<GameRules.BooleanRule> CAMERA_FLIPPED =
             GameRuleRegistry.register("cameraFlipped", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(false));
 
+    public static final GameRules.Key<GameRules.BooleanRule> CAMERA_NAME_TAGS =
+            GameRuleRegistry.register("cameraNameTags", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(true));
+
     public static int camwidth = 860;
     public static int camheight = 480;
     public static float camframerate = 20f;

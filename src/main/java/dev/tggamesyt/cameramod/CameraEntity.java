@@ -200,6 +200,10 @@ public class CameraEntity extends LivingEntity {
     public void setClientOnly(boolean b) { this.clientOnly = b; }
     public boolean isClientOnly() { return this.clientOnly; }
 
+    // Expose protected Entity.unsetRemoved() so CameramodClient can re-add
+    // a client-only camera that was evicted from the world entity list.
+    public void resetRemoval() { this.unsetRemoved(); }
+
     @Override
     public boolean canMoveVoluntarily() {
         // For client-only entities, the client is the authoritative side, so it must

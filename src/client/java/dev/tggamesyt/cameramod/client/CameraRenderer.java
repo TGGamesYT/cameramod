@@ -36,6 +36,8 @@ import net.minecraft.entity.Entity;
 import net.minecraft.util.Identifier;
 import net.minecraft.world.GameRules;
 
+import org.lwjgl.opengl.GL11;
+
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -202,18 +204,22 @@ public class CameraRenderer {
     // Streaming toggle: when false, always show off image regardless of camera state
     private static boolean streamingEnabled = false;
 
-    // Gamerule values synced from server (type=3 cameraSeesChat, type=4 cameraFlipped)
+    // Gamerule values synced from server (type=3 cameraSeesChat, type=4 cameraFlipped, type=5 cameraNameTags)
     private static boolean cameraSeesChatSynced = false;
     private static boolean cameraFlippedSynced = false;
+    private static boolean cameraNameTagsSynced = true;
 
     // Local client-side overrides (null = use server value)
     private static Boolean cameraSeesChatLocal = null;
     private static Boolean cameraFlippedLocal = null;
+    private static Boolean cameraNameTagsLocal = null;
 
     public static void setLocalSeesChat(Boolean val) { cameraSeesChatLocal = val; }
     public static void setLocalFlipped(Boolean val) { cameraFlippedLocal = val; }
+    public static void setLocalNameTags(Boolean val) { cameraNameTagsLocal = val; }
     public static Boolean getLocalSeesChat() { return cameraSeesChatLocal; }
     public static Boolean getLocalFlipped() { return cameraFlippedLocal; }
+    public static Boolean getLocalNameTags() { return cameraNameTagsLocal; }
 
     public static UUID getBoundCameraUuid() {
         return boundCameraUuid;
@@ -242,6 +248,14 @@ public class CameraRenderer {
 
     public static void setCameraFlipped(boolean value) {
         cameraFlippedSynced = value;
+    }
+
+    public static void setCameraNameTags(boolean value) {
+        cameraNameTagsSynced = value;
+    }
+
+    public static boolean getCameraNameTags() {
+        return cameraNameTagsLocal != null ? cameraNameTagsLocal : cameraNameTagsSynced;
     }
 
     // Flag: set when this frame should capture player POV at RETURN of render()
@@ -326,8 +340,15 @@ public class CameraRenderer {
         try {
             int w = Cameramod.camwidth;
             int h = Cameramod.camheight;
-            if (offscreenFbo == null) {
-                offscreenFbo = new SimpleFramebuffer("cameramod_offscreen", w, h, true);
+            // Match the main framebuffer's resolution so other mods that observe
+            // mc.getFramebuffer() dimensions (e.g. mchromium) don't see a size
+            // change during our pass and resize/reallocate their GL resources to
+            // the wrong dimensions — which causes a buffer overrun in glGetTexImage.
+            int fbW = mainFbo.textureWidth;
+            int fbH = mainFbo.textureHeight;
+            if (offscreenFbo == null || offscreenFbo.textureWidth != fbW || offscreenFbo.textureHeight != fbH) {
+                if (offscreenFbo != null) offscreenFbo.delete();
+                offscreenFbo = new SimpleFramebuffer("cameramod_offscreen", fbW, fbH, true);
             }
 
             accessor.cameramod$setFramebuffer(offscreenFbo);
@@ -421,6 +442,20 @@ public class CameraRenderer {
             accessor.cameramod$setFramebuffer(mainFbo);
             mc.setCameraEntity(savedCameraEntity);
             mc.options.setPerspective(savedPerspective);
+
+            // Reset pixel-pack state to GL defaults. MC's new render-device
+            // copyTextureToBuffer pipeline (and other paths inside renderWorld)
+            // may leave GL_PACK_ROW_LENGTH or alignment in a non-default state.
+            // Downstream glGetTexImage callers (e.g. mchromium snapshotPixels in
+            // CLIENT_TICK_END) assume defaults — a non-zero GL_PACK_ROW_LENGTH
+            // makes the driver write past the end of their ByteBuffer and the
+            // NVIDIA driver crashes with an access violation in nvoglv64.dll.
+            try {
+                GL11.glPixelStorei(GL11.GL_PACK_ROW_LENGTH, 0);
+                GL11.glPixelStorei(GL11.GL_PACK_SKIP_PIXELS, 0);
+                GL11.glPixelStorei(GL11.GL_PACK_SKIP_ROWS, 0);
+                GL11.glPixelStorei(GL11.GL_PACK_ALIGNMENT, 4);
+            } catch (Throwable ignored) {}
 
             rendering = false;
         }

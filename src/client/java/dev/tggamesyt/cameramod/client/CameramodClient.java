@@ -47,6 +47,18 @@ public class CameramodClient implements ClientModInitializer {
     // UUID → CameraEntity; managed here, not in the Minecraft world entity list
     public static final java.util.Map<java.util.UUID, CameraEntity> CLIENT_CAMERAS = new java.util.LinkedHashMap<>();
 
+    // Unique entity-id counter for client-only cameras. Negative IDs so they never
+    // collide with server-assigned IDs (vanilla server uses positive IDs from 0 up).
+    // Without this, addEntity() would use the global Entity.CURRENT_ID counter, and
+    // the server's next entity (e.g. an armor stand) at the same numeric ID would
+    // overwrite our CameraEntity in the client's entity table, killing the camera
+    // and eventually kicking the player with a data-tracker type mismatch.
+    private static final java.util.concurrent.atomic.AtomicInteger clientCameraIdCounter
+        = new java.util.concurrent.atomic.AtomicInteger(-1);
+    private static int nextClientCameraId() {
+        return clientCameraIdCounter.getAndDecrement();
+    }
+
     // Client-mode fixer/attacher two-step selection state
     private static java.util.UUID clientSelectedCamera = null;
     // Client-mode mover state
@@ -69,15 +81,25 @@ public class CameramodClient implements ClientModInitializer {
         new ItemStack(ServerItems.CAMERA_REMOVER),
     };
 
-    // Proxy-transfer camera restore: populated on DISCONNECT, consumed on next JOIN tick
+    // Attached-camera restore: persisted to disk, populated on DISCONNECT, applied on next JOIN.
     private static java.util.List<PendingCamera> pendingCameraRestore = new java.util.ArrayList<>();
-    private static boolean restoreCamerasPending = false;
+    // Tick countdown until cameras are recreated after JOIN (-1 = idle, 0 = fire now).
+    private static int restoreTickDelay = -1;
+
+    // Resolved camera save file for the current session.
+    // Singleplayer: {worldSaveDir}/cameramod-cameras.dat (travels with the world).
+    // Multiplayer: config/cameramod-cameras/mp_{address}.dat.
+    private static Path currentSavePath = null;
 
     private record PendingCamera(
         double x, double y, double z,
         float yaw, float pitch,
-        java.util.UUID boundUuid,
-        boolean streaming
+        boolean wasBound,
+        boolean streaming,
+        byte attachMode,
+        boolean gravityEnabled,
+        java.util.UUID fixedTargetUuid,
+        byte fixerMode
     ) {}
 
     // Client-side state flags (set by S2C packets)
@@ -131,41 +153,103 @@ public class CameramodClient implements ClientModInitializer {
         // Detect whether the server has the mod on join/leave
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
             serverHasMod = ClientPlayNetworking.canSend(CameraServerThing.CameraScrollC2SPayload.ID);
+
+            Path newPath = resolveSavePath(client);
+
+            // Proxy backend transfers don't always fire DISCONNECT, so CLIENT_CAMERAS
+            // can still hold entities tied to the OLD ClientWorld. Their world ref is
+            // stale — the 3D model won't render even though streaming still works off
+            // their cached pos/yaw. Snapshot them into pendingCameraRestore so the
+            // countdown recreates fresh CameraEntity instances in the new world.
+            boolean fromLiveSnapshot = !CLIENT_CAMERAS.isEmpty() && client.player != null;
+            if (fromLiveSnapshot) {
+                java.util.UUID playerUuid = client.player.getUuid();
+                java.util.UUID currentBound = CameraRenderer.getBoundCameraUuid();
+                boolean currentStreaming = CameraRenderer.isStreamingEnabled();
+                for (CameraEntity cam : CLIENT_CAMERAS.values()) {
+                    if (playerUuid.equals(cam.getAttachTargetUuid())) {
+                        net.minecraft.util.math.Vec3d offset = cam.getAttachOffset();
+                        boolean wasThisBound = cam.getUuid().equals(currentBound);
+                        pendingCameraRestore.add(new PendingCamera(
+                            offset.x, offset.y, offset.z,
+                            cam.getYaw(), cam.getPitch(),
+                            wasThisBound,
+                            currentStreaming && wasThisBound,
+                            cam.getAttachMode(),
+                            cam.isGravityEnabled(),
+                            cam.getFixedTargetUuid(),
+                            cam.getFixerMode()
+                        ));
+                    }
+                }
+                CLIENT_CAMERAS.clear();
+            }
+
+            // If the save target changed (different world/server), cameras from the
+            // previous session must not bleed into this one. Discard them and load
+            // whatever lives at the new path.
+            boolean pathChanged = newPath != null && !newPath.equals(currentSavePath);
+            if (pathChanged && !pendingCameraRestore.isEmpty()) {
+                pendingCameraRestore.clear();
+                fromLiveSnapshot = false;
+            }
+
+            currentSavePath = newPath;
+
+            // No cameras pending — load from disk for this world/server.
+            if (pendingCameraRestore.isEmpty() && newPath != null) {
+                loadAttachedCameras(newPath);
+                fromLiveSnapshot = false;
+            }
+
             if (!pendingCameraRestore.isEmpty()) {
-                restoreCamerasPending = true;
+                // Proxy reconnect (same path, cameras snapshotted from live world):
+                // restore on the first tick the player is available — no positional
+                // settling needed, the server already has them in place.
+                // Fresh join (disk load): wait 3 s for the server to position the
+                // player at their real spawn before we attach cameras.
+                restoreTickDelay = fromLiveSnapshot ? 1 : 60;
             }
         });
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
-            // Save player-attached client cameras for proxy-transfer restore.
-            // Preserve any still-pending cameras from a previous disconnect that hasn't
-            // restored yet (rapid proxy hops).
             java.util.List<PendingCamera> nextPending = new java.util.ArrayList<>();
-            if (restoreCamerasPending) nextPending.addAll(pendingCameraRestore);
             if (client.player != null) {
                 java.util.UUID playerUuid = client.player.getUuid();
                 java.util.UUID currentBound = CameraRenderer.getBoundCameraUuid();
                 boolean currentStreaming = CameraRenderer.isStreamingEnabled();
                 for (CameraEntity cam : CLIENT_CAMERAS.values()) {
                     if (playerUuid.equals(cam.getAttachTargetUuid())) {
-                        // Save position RELATIVE to player so it restores correctly on a
-                        // different server where the player spawns at different coordinates.
-                        double relX = cam.getX() - client.player.getX();
-                        double relY = cam.getY() - client.player.getY();
-                        double relZ = cam.getZ() - client.player.getZ();
+                        // Use the stored attachOffset directly — it's already in the
+                        // correct coordinate space for the mode (world-space for Fixed,
+                        // local-space for Orbit). Recalculating from world positions
+                        // would break Orbit mode on restore.
+                        net.minecraft.util.math.Vec3d offset = cam.getAttachOffset();
+                        boolean wasThisBound = cam.getUuid().equals(currentBound);
                         nextPending.add(new PendingCamera(
-                            relX, relY, relZ,
+                            offset.x, offset.y, offset.z,
                             cam.getYaw(), cam.getPitch(),
-                            cam.getUuid().equals(currentBound) ? cam.getUuid() : null,
-                            currentStreaming && cam.getUuid().equals(currentBound)
+                            wasThisBound,
+                            currentStreaming && wasThisBound,
+                            cam.getAttachMode(),
+                            cam.isGravityEnabled(),
+                            cam.getFixedTargetUuid(),
+                            cam.getFixerMode()
                         ));
                     }
                 }
             }
+            // If no cameras are active but a restore is still pending (rapid hop before
+            // the countdown fired), carry the pending list forward unchanged.
+            if (nextPending.isEmpty() && !pendingCameraRestore.isEmpty()) {
+                nextPending.addAll(pendingCameraRestore);
+            }
             pendingCameraRestore.clear();
             pendingCameraRestore.addAll(nextPending);
+            if (currentSavePath != null) saveAttachedCameras(currentSavePath);
             serverHasMod = false;
             cameraMode = false;
             CLIENT_CAMERAS.clear();
+            restoreTickDelay = -1;
             clientSelectedCamera = null;
             clientMoverActive = false;
             clientMoverCamUuid = null;
@@ -186,7 +270,7 @@ public class CameramodClient implements ClientModInitializer {
         // Right-click interception is handled by ClientInteractionMixin
         // (mixes into MinecraftClient.doItemUse to fully cancel vanilla use).
 
-        // Client-side gamerule overrides: /cm flip|seeschat <true|false>
+        // Client-side gamerule overrides: /cm flip|seeschat|nametags <true|false>
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             dispatcher.register(
                 ClientCommandManager.literal("cm")
@@ -208,6 +292,15 @@ public class CameramodClient implements ClientModInitializer {
                                 ctx.getSource().sendFeedback(net.minecraft.text.Text.literal("cameraSeesChat set to " + val + " (local override)"));
                                 return 1;
                             })))
+                    .then(ClientCommandManager.literal("nametags")
+                        .then(ClientCommandManager.argument("value", com.mojang.brigadier.arguments.BoolArgumentType.bool())
+                            .executes(ctx -> {
+                                boolean val = com.mojang.brigadier.arguments.BoolArgumentType.getBool(ctx, "value");
+                                CameraRenderer.setLocalNameTags(val);
+                                saveClientConfig();
+                                ctx.getSource().sendFeedback(net.minecraft.text.Text.literal("cameraNameTags set to " + val + " (local override)"));
+                                return 1;
+                            })))
             );
         });
 
@@ -218,9 +311,16 @@ public class CameramodClient implements ClientModInitializer {
         // reload. Re-logging didn't reproduce because the world tick is
         // stopped at the title screen, so no fresh delta is computed.
         ClientEntityEvents.ENTITY_UNLOAD.register((entity, world) -> {
-            if (entity instanceof CameraEntity) {
+            if (entity instanceof CameraEntity cam) {
                 java.util.UUID id = entity.getUuid();
-                CLIENT_CAMERAS.remove(id);
+                // Keep client-only cameras in CLIENT_CAMERAS even after the world
+                // entity manager removes them (chunk unloads, etc.). The attachment
+                // logic and renderer both fall back to CLIENT_CAMERAS, so streaming
+                // and position tracking keep working without the entity in the world.
+                // Server-side cameras are removed normally so stale UUIDs don't linger.
+                if (!cam.isClientOnly()) {
+                    CLIENT_CAMERAS.remove(id);
+                }
                 smoothedTargetHeight.remove(id);
                 lastAttachEntityYaw.remove(id);
                 rawYawHistory.remove(id);
@@ -273,6 +373,8 @@ public class CameramodClient implements ClientModInitializer {
                 CameraRenderer.setCameraSeesChat(payload.active());
             } else if (payload.type() == 4) {
                 CameraRenderer.setCameraFlipped(payload.active());
+            } else if (payload.type() == 5) {
+                CameraRenderer.setCameraNameTags(payload.active());
             }
         });
 
@@ -480,20 +582,12 @@ public class CameramodClient implements ClientModInitializer {
         // Keep cursor unlocked when viewing through a camera
         // Clear zoomer target when player releases shift
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            // Proxy-transfer camera restore: defer until the player has spawned at a real
-            // position with chunks loaded around them. Right after JOIN the player is still
-            // at default coords and not in a loaded chunk; placing the camera then drops it.
-            if (restoreCamerasPending && client.player != null && client.world != null) {
-                int px = (int) Math.floor(client.player.getX()) >> 4;
-                int pz = (int) Math.floor(client.player.getZ()) >> 4;
-                boolean chunkReady = client.world.getChunkManager().getChunk(px, pz) != null;
-                if (chunkReady) {
-                    restoreCamerasPending = false;
+            // Attached-camera restore: count down after join before spawning cameras,
+            // giving the server time to put the player at their real spawn position.
+            if (restoreTickDelay > 0 && client.player != null && client.world != null) {
+                if (--restoreTickDelay == 0) {
                     java.util.UUID playerId = client.player.getUuid();
                     for (PendingCamera pc : pendingCameraRestore) {
-                        // Initial position: at the player. Attachment offset (saved as a relative
-                        // delta at disconnect time) takes effect on the next render frame and
-                        // moves the cam to the saved relative spot.
                         CameraEntity cam = new CameraEntity(Cameramod.CAMERA_ENTITY_ENTITY_TYPE, client.world);
                         cam.refreshPositionAndAngles(
                             client.player.getX() + pc.x(),
@@ -503,12 +597,21 @@ public class CameramodClient implements ClientModInitializer {
                         cam.setClientOnly(true);
                         cam.setAttachTargetUuid(playerId);
                         cam.setAttachOffset(new net.minecraft.util.math.Vec3d(pc.x(), pc.y(), pc.z()));
+                        cam.setAttachMode(pc.attachMode());
+                        cam.setGravityEnabled(pc.gravityEnabled());
+                        cam.setFixedTargetUuid(pc.fixedTargetUuid());
+                        cam.setFixerMode(pc.fixerMode());
+                        cam.setId(nextClientCameraId());
                         CLIENT_CAMERAS.put(cam.getUuid(), cam);
+                        // Add the entity to the world so it's a real client-side
+                        // entity (3D model renders, ticks, etc.). The ENTITY_UNLOAD
+                        // handler keeps it in CLIENT_CAMERAS even if the world manager
+                        // evicts it later, so streaming/attachment stay robust.
                         ((net.minecraft.client.world.ClientWorld) client.world).addEntity(cam);
                         if (pc.streaming()) {
                             CameraRenderer.setBoundCamera(cam.getUuid());
                             CameraRenderer.setStreamingEnabled(true);
-                        } else if (pc.boundUuid() != null) {
+                        } else if (pc.wasBound()) {
                             CameraRenderer.setBoundCamera(cam.getUuid());
                         }
                     }
@@ -532,6 +635,18 @@ public class CameramodClient implements ClientModInitializer {
             if (cameraModeKey != null) {
                 while (cameraModeKey.wasPressed()) {
                     cameraMode = !cameraMode;
+                }
+            }
+
+            // Re-add client-only cameras that were evicted from the world entity list
+            // (chunk unloads mark them as removed but we keep them in CLIENT_CAMERAS).
+            // The 3D model and entity ticking require the entity to be in the world.
+            if (client.world != null) {
+                for (CameraEntity cam : CLIENT_CAMERAS.values()) {
+                    if (cam.isClientOnly() && cam.isRemoved()) {
+                        cam.resetRemoval();
+                        ((net.minecraft.client.world.ClientWorld) client.world).addEntity(cam);
+                    }
                 }
             }
 
@@ -620,7 +735,9 @@ public class CameramodClient implements ClientModInitializer {
                     clientSelectedCamera = null;
                 } else {
                     // air-click: toggle fixer mode on bound camera
-                    camUuid = nilUuid; actionType = 3;
+                    java.util.UUID boundUuid = CameraRenderer.getBoundCameraUuid();
+                    if (boundUuid == null) return;
+                    camUuid = boundUuid; actionType = 3;
                 }
             }
             case 5 -> { // Zoomer
@@ -651,7 +768,9 @@ public class CameramodClient implements ClientModInitializer {
                     clientSelectedCamera = null;
                 } else if (sneaking) {
                     // air-click shift: toggle attach mode on bound cam
-                    camUuid = nilUuid; actionType = 3;
+                    java.util.UUID boundUuid = CameraRenderer.getBoundCameraUuid();
+                    if (boundUuid == null) return;
+                    camUuid = boundUuid; actionType = 3;
                 } else return;
             }
             case 8 -> { // Remover
@@ -673,6 +792,7 @@ public class CameramodClient implements ClientModInitializer {
                     CameraEntity cam = new CameraEntity(Cameramod.CAMERA_ENTITY_ENTITY_TYPE, mc.world);
                     cam.refreshPositionAndAngles(spawnPos.getX() + 0.5, spawnPos.getY(), spawnPos.getZ() + 0.5, mc.player.getYaw(), 0);
                     cam.setClientOnly(true);
+                    cam.setId(nextClientCameraId());
                     CLIENT_CAMERAS.put(cam.getUuid(), cam);
                     ((net.minecraft.client.world.ClientWorld) mc.world).addEntity(cam);
                     mc.player.sendMessage(net.minecraft.text.Text.literal("Camera placed (client)"), true);
@@ -733,7 +853,17 @@ public class CameramodClient implements ClientModInitializer {
                 }
             }
             case 4 -> { // Fixer
-                if (entity instanceof CameraEntity cam4 && CLIENT_CAMERAS.containsKey(cam4.getUuid())) {
+                // Check pending selection FIRST (matches server order: selection → entity type → air)
+                if (clientSelectedCamera != null) {
+                    CameraEntity cam5 = CLIENT_CAMERAS.get(clientSelectedCamera);
+                    clientSelectedCamera = null;
+                    if (cam5 != null && entity != null && !(entity instanceof CameraEntity)) {
+                        cam5.setFixedTargetUuid(entity.getUuid());
+                        mc.player.sendMessage(net.minecraft.text.Text.literal("Camera fixed to " + entity.getName().getString()), true);
+                    } else {
+                        mc.player.sendMessage(net.minecraft.text.Text.literal("Camera selection cleared"), true);
+                    }
+                } else if (entity instanceof CameraEntity cam4 && CLIENT_CAMERAS.containsKey(cam4.getUuid())) {
                     if (sneaking) {
                         clientSelectedCamera = cam4.getUuid();
                         mc.player.sendMessage(net.minecraft.text.Text.literal("Camera selected — click entity to fix to"), true);
@@ -742,14 +872,8 @@ public class CameramodClient implements ClientModInitializer {
                         if (mc.player.getUuid().equals(cur)) { cam4.setFixedTargetUuid(null); mc.player.sendMessage(net.minecraft.text.Text.literal("Tracking disabled"), true); }
                         else { cam4.setFixedTargetUuid(mc.player.getUuid()); mc.player.sendMessage(net.minecraft.text.Text.literal("Camera tracks you"), true); }
                     }
-                } else if (clientSelectedCamera != null) {
-                    CameraEntity cam5 = CLIENT_CAMERAS.get(clientSelectedCamera);
-                    clientSelectedCamera = null;
-                    if (cam5 != null && entity != null) {
-                        cam5.setFixedTargetUuid(entity.getUuid());
-                        mc.player.sendMessage(net.minecraft.text.Text.literal("Camera fixed to " + entity.getName().getString()), true);
-                    }
-                } else {
+                } else if (sneaking) {
+                    // Shift+air: toggle fixer mode on bound camera
                     CameraEntity cam6 = getBoundClientCamera();
                     if (cam6 != null) {
                         byte newMode = (byte) ((cam6.getFixerMode() + 1) % 2);
@@ -762,7 +886,8 @@ public class CameramodClient implements ClientModInitializer {
                 if (entity instanceof CameraEntity cam7 && sneaking && CLIENT_CAMERAS.containsKey(cam7.getUuid())) {
                     clientZoomerCamUuid = cam7.getUuid(); zoomerActive = true;
                     mc.player.sendMessage(net.minecraft.text.Text.literal("Zoom target set"), true);
-                } else if (clientZoomerCamUuid != null) {
+                } else if (!(entity instanceof CameraEntity) && clientZoomerCamUuid != null) {
+                    // Only clear zoom when NOT clicking a camera (non-sneaking camera click = no-op, matching server PASS)
                     clientZoomerCamUuid = null; zoomerActive = false;
                     mc.player.sendMessage(net.minecraft.text.Text.literal("Zoom cleared"), true);
                 }
@@ -771,11 +896,22 @@ public class CameramodClient implements ClientModInitializer {
                 if (entity instanceof CameraEntity cam8 && CLIENT_CAMERAS.containsKey(cam8.getUuid())) {
                     boolean ng = !cam8.isGravityEnabled();
                     cam8.setGravityEnabled(ng);
-                    mc.player.sendMessage(net.minecraft.text.Text.literal("Gravity: " + (ng ? "ON" : "OFF")), true);
+                    mc.player.sendMessage(net.minecraft.text.Text.literal("Gravity " + (ng ? "ON" : "OFF") + " (physics not supported client-side)"), true);
                 }
             }
             case 7 -> { // Attacher
-                if (entity instanceof CameraEntity cam9 && CLIENT_CAMERAS.containsKey(cam9.getUuid())) {
+                // Check pending selection FIRST (matches server order: selection → entity type → air)
+                if (clientSelectedCamera != null) {
+                    CameraEntity cam10 = CLIENT_CAMERAS.get(clientSelectedCamera);
+                    clientSelectedCamera = null;
+                    if (cam10 != null && entity != null && !(entity instanceof CameraEntity)) {
+                        cam10.setAttachTargetUuid(entity.getUuid());
+                        cam10.setAttachOffset(cam10.getPos().subtract(entity.getPos()));
+                        mc.player.sendMessage(net.minecraft.text.Text.literal("Camera attached to " + entity.getName().getString()), true);
+                    } else {
+                        mc.player.sendMessage(net.minecraft.text.Text.literal("Camera selection cleared"), true);
+                    }
+                } else if (entity instanceof CameraEntity cam9 && CLIENT_CAMERAS.containsKey(cam9.getUuid())) {
                     if (sneaking) {
                         clientSelectedCamera = cam9.getUuid();
                         mc.player.sendMessage(net.minecraft.text.Text.literal("Camera selected — click entity to attach to"), true);
@@ -784,19 +920,37 @@ public class CameramodClient implements ClientModInitializer {
                         if (mc.player.getUuid().equals(cur)) { cam9.setAttachTargetUuid(null); mc.player.sendMessage(net.minecraft.text.Text.literal("Camera detached"), true); }
                         else { cam9.setAttachTargetUuid(mc.player.getUuid()); cam9.setAttachOffset(cam9.getPos().subtract(mc.player.getPos())); mc.player.sendMessage(net.minecraft.text.Text.literal("Camera attached to you"), true); }
                     }
-                } else if (clientSelectedCamera != null && entity != null) {
-                    CameraEntity cam10 = CLIENT_CAMERAS.get(clientSelectedCamera);
-                    clientSelectedCamera = null;
-                    if (cam10 != null) {
-                        cam10.setAttachTargetUuid(entity.getUuid());
-                        cam10.setAttachOffset(cam10.getPos().subtract(entity.getPos()));
-                        mc.player.sendMessage(net.minecraft.text.Text.literal("Camera attached to " + entity.getName().getString()), true);
-                    }
                 } else if (sneaking) {
-                    // Shift+air-click: toggle attach mode on bound camera
+                    // Shift+air-click: toggle attach mode on bound camera.
+                    // Must convert the stored offset to the new coordinate space so
+                    // the camera stays at its current world position after the switch.
                     CameraEntity cam11 = getBoundClientCamera();
                     if (cam11 != null) {
                         byte newMode = (byte) ((cam11.getAttachMode() + 1) % 2);
+                        net.minecraft.util.math.Vec3d off = cam11.getAttachOffset();
+                        java.util.UUID atu = cam11.getAttachTargetUuid();
+                        Entity attachTarget = null;
+                        if (mc.player != null && mc.player.getUuid().equals(atu)) {
+                            attachTarget = mc.player;
+                        } else if (atu != null && mc.world != null) {
+                            for (Entity e : mc.world.getEntities()) {
+                                if (e.getUuid().equals(atu)) { attachTarget = e; break; }
+                            }
+                        }
+                        if (attachTarget != null) {
+                            float yr = (float) (attachTarget.getYaw() * Math.PI / 180.0);
+                            if (newMode == 1) {
+                                // world-space → local-space: rotate by -yaw
+                                double lx =  off.x * Math.cos(yr) + off.z * Math.sin(yr);
+                                double lz = -off.x * Math.sin(yr) + off.z * Math.cos(yr);
+                                cam11.setAttachOffset(new net.minecraft.util.math.Vec3d(lx, off.y, lz));
+                            } else {
+                                // local-space → world-space: rotate by +yaw
+                                double wx = off.x * Math.cos(yr) - off.z * Math.sin(yr);
+                                double wz = off.x * Math.sin(yr) + off.z * Math.cos(yr);
+                                cam11.setAttachOffset(new net.minecraft.util.math.Vec3d(wx, off.y, wz));
+                            }
+                        }
                         cam11.setAttachMode(newMode);
                         mc.player.sendMessage(net.minecraft.text.Text.literal("Attach mode: " + (newMode == 0 ? "Fixed" : "Orbit")), true);
                     }
@@ -860,8 +1014,10 @@ public class CameramodClient implements ClientModInitializer {
             props.load(in);
             String flip = props.getProperty("cameraFlipped");
             String chat = props.getProperty("cameraSeesChat");
+            String tags = props.getProperty("cameraNameTags");
             if (flip != null) CameraRenderer.setLocalFlipped(Boolean.parseBoolean(flip));
             if (chat != null) CameraRenderer.setLocalSeesChat(Boolean.parseBoolean(chat));
+            if (tags != null) CameraRenderer.setLocalNameTags(Boolean.parseBoolean(tags));
         } catch (IOException e) {
             LOGGER.warn("Failed to load cameramod-client.properties", e);
         }
@@ -872,12 +1028,99 @@ public class CameramodClient implements ClientModInitializer {
         Properties props = new Properties();
         Boolean flip = CameraRenderer.getLocalFlipped();
         Boolean chat = CameraRenderer.getLocalSeesChat();
+        Boolean tags = CameraRenderer.getLocalNameTags();
         if (flip != null) props.setProperty("cameraFlipped", flip.toString());
         if (chat != null) props.setProperty("cameraSeesChat", chat.toString());
+        if (tags != null) props.setProperty("cameraNameTags", tags.toString());
         try (OutputStream out = Files.newOutputStream(path)) {
             props.store(out, "cameramod client overrides");
         } catch (IOException e) {
             LOGGER.warn("Failed to save cameramod-client.properties", e);
+        }
+    }
+
+    private static String sanitizeKey(String s) {
+        return s.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    /**
+     * Resolved camera save location for the current session:
+     * - Singleplayer: file lives inside the world save folder so it travels with
+     *   the world (rename/copy the world, the cameras come with it).
+     * - Multiplayer: scoped per server address under the global config dir, so a
+     *   proxy network's sub-servers (same address) share one file.
+     */
+    private static Path resolveSavePath(MinecraftClient mc) {
+        if (mc.getServer() != null) {
+            return mc.getServer().getSavePath(net.minecraft.util.WorldSavePath.ROOT)
+                    .resolve("cameramod-cameras.dat");
+        }
+        net.minecraft.client.network.ServerInfo entry = mc.getCurrentServerEntry();
+        if (entry != null) {
+            Path dir = net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("cameramod-cameras");
+            try { Files.createDirectories(dir); } catch (IOException ignored) {}
+            return dir.resolve("mp_" + sanitizeKey(entry.address) + ".dat");
+        }
+        return null;
+    }
+
+    static void saveAttachedCameras(Path path) {
+        Properties props = new Properties();
+        props.setProperty("count", String.valueOf(pendingCameraRestore.size()));
+        for (int i = 0; i < pendingCameraRestore.size(); i++) {
+            PendingCamera pc = pendingCameraRestore.get(i);
+            props.setProperty(i + ".x",  String.valueOf(pc.x()));
+            props.setProperty(i + ".y",  String.valueOf(pc.y()));
+            props.setProperty(i + ".z",  String.valueOf(pc.z()));
+            props.setProperty(i + ".yaw",   String.valueOf(pc.yaw()));
+            props.setProperty(i + ".pitch", String.valueOf(pc.pitch()));
+            props.setProperty(i + ".bound",   String.valueOf(pc.wasBound()));
+            props.setProperty(i + ".stream",  String.valueOf(pc.streaming()));
+            props.setProperty(i + ".attachMode",    String.valueOf(pc.attachMode()));
+            props.setProperty(i + ".gravity",       String.valueOf(pc.gravityEnabled()));
+            if (pc.fixedTargetUuid() != null) {
+                props.setProperty(i + ".fixedTarget", pc.fixedTargetUuid().toString());
+            }
+            props.setProperty(i + ".fixerMode",     String.valueOf(pc.fixerMode()));
+        }
+        try {
+            Path parent = path.getParent();
+            if (parent != null) Files.createDirectories(parent);
+        } catch (IOException ignored) {}
+        try (OutputStream out = Files.newOutputStream(path)) {
+            props.store(out, "cameramod attached cameras — do not edit while game is running");
+        } catch (IOException e) {
+            LOGGER.warn("Failed to save {}", path, e);
+        }
+    }
+
+    private static void loadAttachedCameras(Path path) {
+        if (!Files.exists(path)) return;
+        Properties props = new Properties();
+        try (InputStream in = Files.newInputStream(path)) {
+            props.load(in);
+            int count = Integer.parseInt(props.getProperty("count", "0"));
+            pendingCameraRestore.clear();
+            for (int i = 0; i < count; i++) {
+                double x    = Double.parseDouble(props.getProperty(i + ".x", "0"));
+                double y    = Double.parseDouble(props.getProperty(i + ".y", "0"));
+                double z    = Double.parseDouble(props.getProperty(i + ".z", "0"));
+                float yaw   = Float.parseFloat(props.getProperty(i + ".yaw",   "0"));
+                float pitch = Float.parseFloat(props.getProperty(i + ".pitch", "0"));
+                boolean bound   = Boolean.parseBoolean(props.getProperty(i + ".bound",   "false"));
+                boolean stream  = Boolean.parseBoolean(props.getProperty(i + ".stream",  "false"));
+                byte attachMode = Byte.parseByte(props.getProperty(i + ".attachMode", "0"));
+                boolean gravity = Boolean.parseBoolean(props.getProperty(i + ".gravity", "false"));
+                String fixedStr = props.getProperty(i + ".fixedTarget");
+                java.util.UUID fixedTarget = null;
+                if (fixedStr != null && !fixedStr.isEmpty()) {
+                    try { fixedTarget = java.util.UUID.fromString(fixedStr); } catch (IllegalArgumentException ignored) {}
+                }
+                byte fixerMode = Byte.parseByte(props.getProperty(i + ".fixerMode", "0"));
+                pendingCameraRestore.add(new PendingCamera(x, y, z, yaw, pitch, bound, stream, attachMode, gravity, fixedTarget, fixerMode));
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Failed to load {}", path, e);
         }
     }
 }

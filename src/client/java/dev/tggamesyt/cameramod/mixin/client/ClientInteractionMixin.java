@@ -11,7 +11,7 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -19,16 +19,21 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(MinecraftClient.class)
 public abstract class ClientInteractionMixin {
 
-    // Vanilla's held-key path in handleInputEvents checks itemUseCooldown (NOT attackCooldown).
-    // We need to set it ourselves so the held mouse button doesn't re-trigger doItemUse every tick.
-    @Shadow
-    private int itemUseCooldown;
+    // Own cooldown counter — avoids @Shadow dependency on MC's private itemUseCooldown field.
+    // Decremented each game tick; set to 4 on each successful camera interaction so the held
+    // mouse-button path in handleInputEvents can't re-fire every tick.
+    @Unique
+    private int cameramod$useCooldown = 0;
+
+    @Inject(method = "tick", at = @At("HEAD"))
+    private void cameramod$tickUseCooldown(CallbackInfo ci) {
+        if (cameramod$useCooldown > 0) cameramod$useCooldown--;
+    }
 
     /**
      * Intercept right-click ("use item") in camera mode.
      * Always cancels vanilla so the real hotbar item never runs.
-     * Only dispatches our camera interaction when itemUseCooldown is 0,
-     * mirroring vanilla's first action inside doItemUse.
+     * Only dispatches our camera interaction when the cooldown is 0.
      */
     @Inject(method = "doItemUse", at = @At("HEAD"), cancellable = true)
     private void cameramod$interceptUse(CallbackInfo ci) {
@@ -43,12 +48,13 @@ public abstract class ClientInteractionMixin {
         // Always cancel vanilla so the real item never runs.
         ci.cancel();
 
-        // Cooldown check (mirror vanilla's setting at the start of doItemUse).
-        if (this.itemUseCooldown > 0) return;
-        this.itemUseCooldown = 4;
+        if (cameramod$useCooldown > 0) return;
+        cameramod$useCooldown = 4;
 
         // Manual raycast: prefer entity hits (including client-only cameras) over blocks.
-        double reach = 5.0;
+        // Reach matches client render distance — a fixed limit feels broken when the
+        // player can clearly see (and want to click) a far camera entity.
+        double reach = mc.options.getViewDistance().getValue() * 16.0;
         Vec3d eye = mc.player.getEyePos();
         Vec3d look = mc.player.getRotationVec(1.0F);
         Vec3d end = eye.add(look.x * reach, look.y * reach, look.z * reach);
@@ -90,7 +96,7 @@ public abstract class ClientInteractionMixin {
 
         CameramodClient.onCameraItemInteract(slot, entity, blockHit);
 
-        // Swing the hand so the player gets visual feedback (vanilla doItemUse does this on success).
+        // Swing the hand so the player gets visual feedback.
         mc.player.swingHand(Hand.MAIN_HAND);
     }
 }

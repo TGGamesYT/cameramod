@@ -31,7 +31,38 @@ public class CameraStreamServer {
     private static BufferedImage streamImage;
     private static int[] streamPixels;
 
+    // Most-recently-pushed JPEG. New clients receive it immediately so the browser
+    // never stalls waiting for the first frame. Volatile: written on push thread, read on accept thread.
+    private static volatile byte[] lastFrame;
+    private static volatile long lastFrameTime = 0;
+
+    // Placeholder black JPEG sent until the first real frame arrives.
+    static {
+        try {
+            BufferedImage black = new BufferedImage(16, 9, BufferedImage.TYPE_INT_RGB);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream(256);
+            ImageIO.write(black, "jpeg", baos);
+            lastFrame = baos.toByteArray();
+        } catch (Exception ignored) {}
+    }
+
     public static void start() {
+        // Heartbeat: push lastFrame every second when no real frame has been sent recently,
+        // so the browser <img> tag never goes stale/broken while the stream is connected.
+        Thread heartbeat = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(1000);
+                    if (!clients.isEmpty() && System.currentTimeMillis() - lastFrameTime > 1500) {
+                        byte[] lf = lastFrame;
+                        if (lf != null) pushJpegToAll(lf);
+                    }
+                } catch (InterruptedException e) { break; }
+            }
+        }, "CameraStream-heartbeat");
+        heartbeat.setDaemon(true);
+        heartbeat.start();
+
         Thread acceptThread = new Thread(() -> {
             try {
                 serverSocket = new ServerSocket(PORT, 50, InetAddress.getLoopbackAddress());
@@ -56,6 +87,11 @@ public class CameraStreamServer {
         return !clients.isEmpty();
     }
 
+    // Poll /ping every 1s — independent of the long-running /stream connection.
+    // When ping fails (game/server restart), we know to reload the <img> src so
+    // the browser drops its stale connection and reconnects to the new server.
+    // The <img> onerror alone is unreliable: MJPEG connections can hang in a
+    // "headers received but no new frames" state forever after a server crash.
     private static final String INDEX_HTML =
         "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Camera Stream</title>" +
         "<style>*{margin:0;padding:0}body{background:#000;width:100vw;height:100vh;display:flex;" +
@@ -65,13 +101,21 @@ public class CameraStreamServer {
         "font-size:13px;display:none}</style></head><body>" +
         "<div id='status'></div><img id='s'>" +
         "<script>" +
-        "var delay=500,max=8000,t,s=document.getElementById('s'),st=document.getElementById('status');" +
+        "var s=document.getElementById('s'),st=document.getElementById('status');" +
+        "var serverUp=null;" + // null=unknown, true=up, false=down
         "function show(m){st.textContent=m;st.style.display='block';}" +
         "function hide(){st.style.display='none';}" +
-        "function load(){clearTimeout(t);s.src='/stream?'+Date.now();}" +
-        "s.onload=function(){delay=500;hide();};" +
-        "s.onerror=function(){show('Reconnecting…');delay=Math.min(delay*2,max);t=setTimeout(load,delay);};" +
-        "load();" +
+        "function reload(){s.src='/stream?'+Date.now();}" +
+        "function ping(){" +
+        "  fetch('/ping?'+Date.now(),{cache:'no-store'}).then(function(r){" +
+        "    if(!r.ok)throw 0;" +
+        "    if(serverUp!==true){serverUp=true;hide();reload();}" +
+        "  }).catch(function(){" +
+        "    if(serverUp!==false){serverUp=false;show('Reconnecting…');}" +
+        "  });" +
+        "}" +
+        "s.onerror=function(){show('Reconnecting…');setTimeout(reload,1000);};" +
+        "reload();ping();setInterval(ping,1000);" +
         "</script></body></html>";
 
     private static void handleClient(Socket socket) {
@@ -95,6 +139,21 @@ public class CameraStreamServer {
 
             out = socket.getOutputStream();
 
+            if (path.equals("/ping")) {
+                // Liveness probe — short response, immediate close. The wrapper
+                // polls this so a dead server is detected even if the long-lived
+                // /stream connection appears "still open" to the browser.
+                String resp = "HTTP/1.0 200 OK\r\n" +
+                        "Content-Type: text/plain\r\n" +
+                        "Content-Length: 2\r\n" +
+                        "Cache-Control: no-cache\r\n" +
+                        "Access-Control-Allow-Origin: *\r\n" +
+                        "Connection: close\r\n\r\nok";
+                out.write(resp.getBytes());
+                out.flush();
+                return;
+            }
+
             if (!path.equals("/stream")) {
                 // Serve the HTML wrapper page
                 byte[] body = INDEX_HTML.getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -116,6 +175,15 @@ public class CameraStreamServer {
                     "Connection: close\r\n\r\n";
             out.write(response.getBytes());
             out.flush();
+
+            // Send the last known frame immediately so the browser shows something
+            // rather than waiting for the next real frame (which may be seconds away).
+            byte[] lf = lastFrame;
+            if (lf != null) {
+                writeMjpegPart(out, lf);
+                out.flush();
+            }
+
             clients.add(out);
             // Block until client disconnects
             while (in.read() != -1) { /* wait */ }
@@ -140,23 +208,31 @@ public class CameraStreamServer {
     private static void pushFrameAsync(byte[] bgr, int w, int h) {
         byte[] jpeg = bgrToJpeg(bgr, w, h);
         if (jpeg == null) return;
-        String header = "--" + BOUNDARY + "\r\nContent-Type: image/jpeg\r\nContent-Length: " + jpeg.length + "\r\n\r\n";
-        byte[] headerBytes = header.getBytes();
-        byte[] trailer = "\r\n".getBytes();
+        lastFrame = jpeg;
+        lastFrameTime = System.currentTimeMillis();
+        pushJpegToAll(jpeg);
+    }
+
+    private static void pushJpegToAll(byte[] jpeg) {
         synchronized (clients) {
             Iterator<OutputStream> it = clients.iterator();
             while (it.hasNext()) {
                 OutputStream out = it.next();
                 try {
-                    out.write(headerBytes);
-                    out.write(jpeg);
-                    out.write(trailer);
+                    writeMjpegPart(out, jpeg);
                     out.flush();
                 } catch (IOException e) {
                     it.remove();
                 }
             }
         }
+    }
+
+    private static void writeMjpegPart(OutputStream out, byte[] jpeg) throws IOException {
+        String header = "--" + BOUNDARY + "\r\nContent-Type: image/jpeg\r\nContent-Length: " + jpeg.length + "\r\n\r\n";
+        out.write(header.getBytes());
+        out.write(jpeg);
+        out.write("\r\n".getBytes());
     }
 
     /**
@@ -170,8 +246,7 @@ public class CameraStreamServer {
                 streamPixels = ((DataBufferInt) streamImage.getRaster().getDataBuffer()).getData();
             }
             for (int y = 0; y < h; y++) {
-                int srcRow = y;
-                int srcBase = srcRow * w * 3;
+                int srcBase = y * w * 3;
                 int dstBase = y * w;
                 for (int x = 0; x < w; x++) {
                     int si = srcBase + x * 3;
