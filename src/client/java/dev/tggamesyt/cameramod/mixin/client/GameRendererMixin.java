@@ -1,5 +1,6 @@
 package dev.tggamesyt.cameramod.mixin.client;
 
+import dev.tggamesyt.cameramod.Cameramod;
 import dev.tggamesyt.cameramod.client.CameraRenderer;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.render.Camera;
@@ -57,6 +58,26 @@ public class GameRendererMixin {
             float zoom = CameraRenderer.getActiveZoomLevel();
             if (zoom > 0.0f) baseFov /= zoom;
             cir.setReturnValue(baseFov);
+        }
+    }
+
+    // Vanilla builds the projection matrix from the window's framebuffer aspect
+    // ratio, which makes the camera image stretch/squash whenever the player
+    // resizes the Minecraft window. During the camera pass we substitute the
+    // camera's own aspect ratio so the captured frame is always undistorted
+    // regardless of window dimensions.
+    @Inject(method = "getBasicProjectionMatrix", at = @At("HEAD"), cancellable = true)
+    private void cameramod$cameraAspectProjection(float fov, CallbackInfoReturnable<Matrix4f> cir) {
+        if (CameraRenderer.isRendering()) {
+            GameRenderer self = (GameRenderer) (Object) this;
+            float aspect = (float) Cameramod.camwidth / (float) Cameramod.camheight;
+            Matrix4f m = new Matrix4f().perspective(
+                    fov * 0.017453292f,
+                    aspect,
+                    0.05f,
+                    self.getFarPlaneDistance()
+            );
+            cir.setReturnValue(m);
         }
     }
 

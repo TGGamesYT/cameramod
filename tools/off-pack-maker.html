@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cameramod — Off-Image Pack Maker</title>
+<style>
+  :root {
+    --bg:#14161a; --panel:#1d2026; --panel2:#23272f; --line:#323843;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#4f9dff; --accent2:#3b7fd6;
+    --good:#56c271; --warn:#e0a341; --bad:#e0594b;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.5 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  }
+  header { padding:22px 24px 8px; }
+  h1 { margin:0 0 4px; font-size:20px; }
+  .sub { color:var(--muted); font-size:13px; }
+  main { max-width:860px; margin:0 auto; padding:16px 24px 60px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin:14px 0; }
+  .card h2 { margin:0 0 12px; font-size:15px; font-weight:600; }
+  #drop {
+    border:2px dashed var(--line); border-radius:10px; padding:34px 18px; text-align:center;
+    color:var(--muted); cursor:pointer; transition:.15s; background:var(--panel2);
+  }
+  #drop.drag { border-color:var(--accent); color:var(--text); background:#222a36; }
+  #drop strong { color:var(--text); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px 16px; }
+  label.field { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted); }
+  label.field input, label.field select {
+    background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:6px; padding:7px 8px; font:inherit;
+  }
+  label.check { display:flex; align-items:center; gap:8px; color:var(--text); font-size:13px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button {
+    background:var(--accent); color:#fff; border:0; border-radius:7px;
+    padding:10px 16px; font:inherit; font-weight:600; cursor:pointer;
+  }
+  button:hover { background:var(--accent2); }
+  button:disabled { background:#3a4150; color:#8a93a3; cursor:not-allowed; }
+  button.secondary { background:var(--panel2); border:1px solid var(--line); color:var(--text); font-weight:500; }
+  .muted { color:var(--muted); }
+  .mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
+  canvas { max-width:100%; border:1px solid var(--line); border-radius:6px; background:#000; display:block; }
+  .preview { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }
+  .preview canvas { width:240px; height:auto; }
+  .bar { height:8px; background:var(--panel2); border-radius:5px; overflow:hidden; border:1px solid var(--line); }
+  .bar > i { display:block; height:100%; width:0; background:var(--accent); transition:width .1s; }
+  .status { min-height:20px; font-size:13px; }
+  .status.good { color:var(--good); } .status.warn { color:var(--warn); } .status.bad { color:var(--bad); }
+  .hide { display:none !important; }
+  details { margin-top:8px; } summary { cursor:pointer; color:var(--muted); }
+  code { background:var(--panel2); padding:1px 5px; border-radius:4px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:20px; background:var(--panel2); border:1px solid var(--line); font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cameramod — Off-Image Pack Maker</h1>
+  <div class="sub">Turn a GIF, video, or image into a Cameramod “off” resource pack — the screen the camera stream shows when no live camera is up.</div>
+</header>
+<main>
+
+  <div class="card">
+    <h2>1 · Pick a file</h2>
+    <div id="drop">
+      <p><strong>Drop a GIF, video, or image here</strong> — or click to browse.</p>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">
+        Animated (GIF / MP4 / WebM / MOV) → multi-frame animation. Image (PNG / JPG / WebP) → single static <code>off.png</code>.
+      </p>
+      <input id="file" type="file" accept="image/*,video/*,.gif" class="hide">
+    </div>
+    <div id="fileinfo" class="status" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card hide" id="opts">
+    <h2>2 · Options</h2>
+    <div class="grid">
+      <label class="field">Mode
+        <select id="mode">
+          <option value="auto">Auto (detect from file)</option>
+          <option value="anim">Animation (multi-frame)</option>
+          <option value="static">Static image (off.png)</option>
+        </select>
+      </label>
+      <label class="field">Frame rate (fps)
+        <input id="fps" type="number" min="1" max="60" value="24">
+      </label>
+      <label class="field">Max width (px, 0 = source)
+        <input id="maxw" type="number" min="0" max="3840" value="0">
+      </label>
+      <label class="field">Max frames
+        <input id="maxframes" type="number" min="1" max="5000" value="600">
+      </label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label class="check"><input id="flatten" type="checkbox" checked> Flatten transparency onto black</label>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="build">Build pack</button>
+      <span class="pill" id="estimate"></span>
+    </div>
+  </div>
+
+  <div class="card hide" id="progresscard">
+    <h2>3 · Building</h2>
+    <div class="bar"><i id="barfill"></i></div>
+    <div id="progress" class="status" style="margin-top:8px"></div>
+    <div class="preview" style="margin-top:12px">
+      <div>
+        <div class="muted" style="font-size:12px;margin-bottom:4px">First frame preview</div>
+        <canvas id="preview" width="16" height="9"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="card hide" id="donecard">
+    <h2>4 · Download</h2>
+    <div id="doneinfo" class="status good"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="download">Download pack .zip</button>
+      <button class="secondary" id="reset">Start over</button>
+    </div>
+    <details>
+      <summary>How to install</summary>
+      <ol class="muted" style="margin:8px 0 0">
+        <li>Put the downloaded <code>.zip</code> into your <code class="mono">.minecraft/resourcepacks/</code> folder.</li>
+        <li>In Minecraft: <strong>Options → Resource Packs</strong>, move it to the enabled side, click <strong>Done</strong>.</li>
+        <li>The camera stream’s “off” screen now shows your animation/image. No live camera needed to see it.</li>
+      </ol>
+    </details>
+  </div>
+
+  <p class="muted" style="font-size:12px;margin-top:20px">
+    Runs entirely in your browser — nothing is uploaded. GIF frame extraction needs the
+    <span class="mono">ImageDecoder</span> API (Chrome / Edge / recent Firefox); if your browser lacks it, convert the GIF to MP4 first.
+    Declares both the old (<span class="mono">pack_format</span>/<span class="mono">supported_formats</span>) and new
+    (<span class="mono">min_format</span>/<span class="mono">max_format</span>, 25w31a+) format fields, so it stays valid on Minecraft 1.21.8 and newer.
+  </p>
+</main>
+
+<script>
+"use strict";
+
+// ─────────────────────────────────────────────────────────────────────────
+// Minimal STORE-mode ZIP writer (no external libs). PNGs are already
+// compressed, so storing them uncompressed keeps this tiny and dependency-free.
+// ─────────────────────────────────────────────────────────────────────────
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+class ZipWriter {
+  constructor() { this.files = []; }
+  add(name, bytes) {
+    if (typeof bytes === "string") bytes = new TextEncoder().encode(bytes);
+    this.files.push({ name: new TextEncoder().encode(name), data: bytes, crc: crc32(bytes) });
+  }
+  build() {
+    const chunks = [], central = [];
+    let offset = 0;
+    const u16 = v => new Uint8Array([v & 255, (v >>> 8) & 255]);
+    const u32 = v => new Uint8Array([v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]);
+    for (const f of this.files) {
+      const local = concat([
+        u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
+        u32(f.crc), u32(f.data.length), u32(f.data.length),
+        u16(f.name.length), u16(0), f.name, f.data
+      ]);
+      central.push(concat([
+        u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+        u32(f.crc), u32(f.data.length), u32(f.data.length),
+        u16(f.name.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset), f.name
+      ]));
+      chunks.push(local);
+      offset += local.length;
+    }
+    const centralStart = offset;
+    let centralSize = 0;
+    for (const c of central) { chunks.push(c); centralSize += c.length; }
+    chunks.push(concat([
+      u32(0x06054b50), u16(0), u16(0),
+      u16(this.files.length), u16(this.files.length),
+      u32(centralSize), u32(centralStart), u16(0)
+    ]));
+    return new Blob(chunks, { type: "application/zip" });
+  }
+}
+function concat(arrs) {
+  let len = 0; for (const a of arrs) len += a.length;
+  const out = new Uint8Array(len); let p = 0;
+  for (const a of arrs) { out.set(a, p); p += a.length; }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// UI state
+// ─────────────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+let currentFile = null, builtBlob = null, builtName = "cameramod-off-pack.zip";
+
+const drop = $("drop"), fileInput = $("file");
+drop.addEventListener("click", () => fileInput.click());
+["dragenter", "dragover"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("drag"); }));
+["dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("drag"); }));
+drop.addEventListener("drop", ev => { if (ev.dataTransfer.files[0]) selectFile(ev.dataTransfer.files[0]); });
+fileInput.addEventListener("change", () => { if (fileInput.files[0]) selectFile(fileInput.files[0]); });
+
+function kindOf(file) {
+  const t = file.type, n = file.name.toLowerCase();
+  if (t === "image/gif" || n.endsWith(".gif")) return "gif";
+  if (t.startsWith("video/")) return "video";
+  if (t.startsWith("image/")) return "image";
+  if (/\.(mp4|webm|mov|mkv|m4v|ogv)$/.test(n)) return "video";
+  return "image";
+}
+
+function selectFile(file) {
+  currentFile = file;
+  builtBlob = null;
+  const kind = kindOf(file);
+  $("fileinfo").className = "status good";
+  $("fileinfo").textContent = `Selected: ${file.name} (${(file.size / 1048576).toFixed(2)} MB) — detected as ${kind}.`;
+  $("opts").classList.remove("hide");
+  $("donecard").classList.add("hide");
+  $("progresscard").classList.add("hide");
+  // Default mode hint
+  const modeSel = $("mode");
+  if (modeSel.value === "auto") { /* keep auto */ }
+  updateEstimate();
+}
+
+["mode", "fps", "maxframes"].forEach(id => $(id).addEventListener("input", updateEstimate));
+function updateEstimate() {
+  if (!currentFile) return;
+  const mode = effectiveMode();
+  if (mode === "static") { $("estimate").textContent = "Output: single off.png"; return; }
+  $("estimate").textContent = `Output: up to ${$("maxframes").value} frames @ ${$("fps").value} fps`;
+}
+function effectiveMode() {
+  const m = $("mode").value;
+  if (m !== "auto") return m;
+  return kindOf(currentFile) === "image" ? "static" : "anim";
+}
+
+$("build").addEventListener("click", build);
+$("reset").addEventListener("click", () => location.reload());
+$("download").addEventListener("click", () => {
+  if (!builtBlob) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(builtBlob);
+  a.download = builtName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+});
+
+function setProgress(pct, msg, cls) {
+  $("barfill").style.width = Math.max(0, Math.min(100, pct)) + "%";
+  $("progress").textContent = msg || "";
+  $("progress").className = "status" + (cls ? " " + cls : "");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Build
+// ─────────────────────────────────────────────────────────────────────────
+const PACK_FORMAT = 64; // Minecraft 1.21.8 (base); supported_formats opens it to newer versions too
+const GUI = "assets/cameramod/textures/gui/";
+
+async function build() {
+  if (!currentFile) return;
+  $("build").disabled = true;
+  $("progresscard").classList.remove("hide");
+  $("donecard").classList.add("hide");
+  setProgress(2, "Reading file…");
+
+  try {
+    const mode = effectiveMode();
+    const maxW = parseInt($("maxw").value) || 0;
+    const flatten = $("flatten").checked;
+    const zip = new ZipWriter();
+    zip.add("pack.mcmeta", JSON.stringify({
+      pack: {
+        // Cross-version metadata so the pack stays valid from 1.21.8 forward
+        // instead of being flagged "incompatible" after a game update:
+        //  • pack_format + supported_formats  → read by 1.21.8 and earlier
+        //    (the old system; still REQUIRED while we support format < 65).
+        //  • min_format + max_format          → read by 1.21.9+ (25w31a's new
+        //    system; each accepts a [major, minor] array, a plain int = [n, 0],
+        //    and a plain int max = that major with any minor).
+        pack_format: PACK_FORMAT,
+        supported_formats: [PACK_FORMAT, 9999],
+        min_format: PACK_FORMAT,
+        max_format: 9999,
+        description: "Cameramod off-image pack"
+      }
+    }, null, 2) + "\n");
+
+    if (mode === "static") {
+      setProgress(20, "Rendering image…");
+      const bmp = await fileToBitmap(currentFile);
+      const { canvas, ctx } = makeCanvas(bmp.width, bmp.height, maxW);
+      if (flatten) fillBlack(ctx, canvas);
+      ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      drawPreview(canvas);
+      const png = await canvasToPng(canvas);
+      zip.add(GUI + "off.png", png);
+      setProgress(90, "Packing…");
+      finish(zip, `Static pack ready · ${canvas.width}×${canvas.height} · off.png`);
+      return;
+    }
+
+    // Animation
+    const fps = Math.max(1, Math.min(60, parseInt($("fps").value) || 24));
+    const maxFrames = Math.max(1, parseInt($("maxframes").value) || 600);
+    const kind = kindOf(currentFile);
+    let frames;
+    if (kind === "gif") frames = await extractGifFrames(currentFile, fps, maxFrames, maxW, flatten);
+    else frames = await extractVideoFrames(currentFile, fps, maxFrames, maxW, flatten);
+
+    if (!frames.length) throw new Error("No frames were extracted.");
+
+    setProgress(92, `Encoding ${frames.length} frames into the pack…`);
+    for (let i = 0; i < frames.length; i++) zip.add(GUI + `off_${i}.png`, frames[i]);
+    zip.add(GUI + "off.count", String(frames.length));
+    zip.add(GUI + "off.fps", String(fps));
+    finish(zip, `Animation pack ready · ${frames.length} frames @ ${fps} fps`);
+  } catch (err) {
+    console.error(err);
+    setProgress(100, "Error: " + (err && err.message ? err.message : err), "bad");
+    $("build").disabled = false;
+  }
+}
+
+function finish(zip, summary) {
+  setProgress(98, "Zipping…");
+  builtBlob = zip.build();
+  builtName = "cameramod-off-pack.zip";
+  setProgress(100, "Done.", "good");
+  $("donecard").classList.remove("hide");
+  $("doneinfo").textContent = `${summary} · ${(builtBlob.size / 1048576).toFixed(2)} MB`;
+  $("build").disabled = false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Frame extraction helpers
+// ─────────────────────────────────────────────────────────────────────────
+function makeCanvas(w, h, maxW) {
+  let cw = w, ch = h;
+  if (maxW > 0 && w > maxW) { cw = maxW; ch = Math.max(1, Math.round(h * maxW / w)); }
+  const canvas = document.createElement("canvas");
+  canvas.width = cw; canvas.height = ch;
+  return { canvas, ctx: canvas.getContext("2d", { willReadFrequently: false }) };
+}
+function fillBlack(ctx, canvas) { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+function canvasToPng(canvas) {
+  return new Promise((res, rej) =>
+    canvas.toBlob(b => b ? b.arrayBuffer().then(ab => res(new Uint8Array(ab))) : rej(new Error("toBlob failed")), "image/png"));
+}
+function drawPreview(srcCanvas) {
+  const pv = $("preview"); const r = srcCanvas.height / srcCanvas.width;
+  pv.width = 320; pv.height = Math.max(1, Math.round(320 * r));
+  pv.getContext("2d").drawImage(srcCanvas, 0, 0, pv.width, pv.height);
+}
+async function fileToBitmap(file) {
+  return await createImageBitmap(file);
+}
+
+// GIF: WebCodecs ImageDecoder gives per-frame access (incl. frame durations).
+async function extractGifFrames(file, fps, maxFrames, maxW, flatten) {
+  if (typeof ImageDecoder === "undefined")
+    throw new Error("This browser can't decode GIF frames (no ImageDecoder API). Convert the GIF to MP4, or use Chrome/Edge.");
+  const buf = await file.arrayBuffer();
+  const dec = new ImageDecoder({ data: buf, type: "image/gif" });
+  await dec.tracks.ready;
+  const track = dec.tracks.selectedTrack;
+  // Decode all source frames, then resample to the requested fps timeline.
+  const src = [];
+  let idx = 0;
+  // frameCount may be 0 until fully decoded for some encoders; decode until done.
+  while (true) {
+    let result;
+    try { result = await dec.decode({ frameIndex: idx, completeFramesOnly: true }); }
+    catch (e) { break; }
+    const vf = result.image;
+    const durUs = vf.duration == null ? 100000 : vf.duration; // default 100ms if unknown
+    src.push({ frame: vf, durationMs: durUs / 1000 });
+    idx++;
+    setProgress(5 + Math.min(40, idx), `Decoding GIF… ${idx} source frames`);
+    const known = track && track.frameCount ? track.frameCount : 0;
+    if (known && idx >= known) break;
+    if (idx > 5000) break; // safety
+  }
+  if (!src.length) throw new Error("No GIF frames decoded.");
+
+  // Build a cumulative time map and sample at 1/fps. This preserves the GIF's
+  // real timing (variable per-frame delays) while producing a fixed-fps clip.
+  const timeline = [];
+  let t = 0;
+  for (const s of src) { timeline.push({ start: t, frame: s.frame }); t += s.durationMs; }
+  const totalMs = t;
+  const step = 1000 / fps;
+  const first = src[0].frame;
+  const { canvas, ctx } = makeCanvas(first.displayWidth || first.codedWidth, first.displayHeight || first.codedHeight, maxW);
+
+  const out = [];
+  for (let time = 0; time < totalMs && out.length < maxFrames; time += step) {
+    // find the source frame active at `time`
+    let f = timeline[0].frame;
+    for (let i = 0; i < timeline.length; i++) { if (timeline[i].start <= time) f = timeline[i].frame; else break; }
+    if (flatten) fillBlack(ctx, canvas);
+    ctx.drawImage(f, 0, 0, canvas.width, canvas.height);
+    if (out.length === 0) drawPreview(canvas);
+    out.push(await canvasToPng(canvas));
+    setProgress(45 + Math.round(45 * time / totalMs), `Rendering frame ${out.length}…`);
+  }
+  src.forEach(s => { try { s.frame.close(); } catch (e) {} });
+  try { dec.close(); } catch (e) {}
+  return out;
+}
+
+// Video: seek through the timeline and grab each frame off a <video> element.
+async function extractVideoFrames(file, fps, maxFrames, maxW, flatten) {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  video.muted = true; video.playsInline = true; video.preload = "auto"; video.src = url;
+  await new Promise((res, rej) => {
+    video.onloadedmetadata = res;
+    video.onerror = () => rej(new Error("Could not load this video (unsupported codec?). Try MP4/H.264 or WebM/VP9."));
+  });
+  // Some browsers need a tick before seeking works reliably.
+  await new Promise(r => setTimeout(r, 60));
+  const duration = video.duration && isFinite(video.duration) ? video.duration : 0;
+  if (!duration) { URL.revokeObjectURL(url); throw new Error("Video duration unknown — cannot extract frames."); }
+
+  const { canvas, ctx } = makeCanvas(video.videoWidth, video.videoHeight, maxW);
+  const step = 1 / fps;
+  const total = Math.min(maxFrames, Math.max(1, Math.floor(duration * fps)));
+  const out = [];
+  for (let i = 0; i < total; i++) {
+    const ts = Math.min(duration - 1e-3, i * step);
+    await seekTo(video, ts);
+    if (flatten) fillBlack(ctx, canvas);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if (i === 0) drawPreview(canvas);
+    out.push(await canvasToPng(canvas));
+    setProgress(5 + Math.round(88 * (i + 1) / total), `Capturing frame ${i + 1} / ${total}…`);
+  }
+  URL.revokeObjectURL(url);
+  return out;
+}
+function seekTo(video, t) {
+  return new Promise((res, rej) => {
+    let done = false;
+    const ok = () => { if (done) return; done = true; video.removeEventListener("seeked", ok); res(); };
+    video.addEventListener("seeked", ok);
+    try { video.currentTime = t; } catch (e) { rej(e); }
+    setTimeout(ok, 2000); // safety net if 'seeked' never fires
+  });
+}
+</script>
+</body>
+</html>

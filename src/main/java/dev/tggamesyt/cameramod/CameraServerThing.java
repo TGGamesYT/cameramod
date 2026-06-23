@@ -27,6 +27,7 @@ public final class CameraServerThing {
         registerScrollHandler();
         registerOrientHandler();
         registerCameraItemUseHandler();
+        registerEditHandler();
     }
 
     private static void registerCommand() {
@@ -176,6 +177,26 @@ public final class CameraServerThing {
         public Id<? extends CustomPayload> getId() { return ID; }
     }
 
+    // Server-to-client sync of integer-valued settings (type 0 = stream FPS,
+    // type 1 = virtual cam FPS). Booleans go through CameraItemStateS2CPayload.
+    public record CameraIntSettingS2CPayload(byte type, int value) implements CustomPayload {
+        public static final Identifier INT_SETTING_ID = Identifier.of(Cameramod.MOD_ID, "camera_int_setting");
+        public static final Id<CameraIntSettingS2CPayload> ID = new Id<>(INT_SETTING_ID);
+        public static final PacketCodec<RegistryByteBuf, CameraIntSettingS2CPayload> CODEC = new PacketCodec<>() {
+            @Override
+            public CameraIntSettingS2CPayload decode(RegistryByteBuf buf) {
+                return new CameraIntSettingS2CPayload(buf.readByte(), buf.readVarInt());
+            }
+            @Override
+            public void encode(RegistryByteBuf buf, CameraIntSettingS2CPayload payload) {
+                buf.writeByte(payload.type);
+                buf.writeVarInt(payload.value);
+            }
+        };
+        @Override
+        public Id<? extends CustomPayload> getId() { return ID; }
+    }
+
     // Periodic camera position sync (for when entity is beyond tracking range)
     public record CameraPosS2CPayload(double x, double y, double z, float yaw, float pitch, float zoom) implements CustomPayload {
         public static final Identifier POS_ID = Identifier.of(Cameramod.MOD_ID, "camera_pos");
@@ -292,6 +313,111 @@ public final class CameraServerThing {
         @Override public Id<? extends CustomPayload> getId() { return ID; }
     }
 
+    /**
+     * General-purpose camera property editor sent from the GUI.
+     * Flags indicate which fields are set; NIL UUID means "clear target".
+     */
+    public record CameraEditC2SPayload(
+            UUID cameraUuid, int flags,
+            double posX, double posY, double posZ,
+            float yaw, float pitch,
+            UUID fixedTargetUuid, byte fixerMode,
+            UUID attachTargetUuid,
+            float attachOffsetX, float attachOffsetY, float attachOffsetZ,
+            byte attachMode,
+            boolean gravityEnabled, float zoomLevel, String customName
+    ) implements CustomPayload {
+        public static final int FLAG_POS         = 1;
+        public static final int FLAG_ROTATION    = 2;
+        public static final int FLAG_FIXED       = 4;
+        public static final int FLAG_FIXER_MODE  = 8;
+        public static final int FLAG_ATTACH      = 16;
+        public static final int FLAG_ATTACH_OFF  = 32;
+        public static final int FLAG_ATTACH_MODE = 64;
+        public static final int FLAG_GRAVITY     = 128;
+        public static final int FLAG_ZOOM        = 256;
+        public static final int FLAG_NAME        = 512;
+
+        public static final Identifier EDIT_ID = Identifier.of(Cameramod.MOD_ID, "camera_edit");
+        public static final Id<CameraEditC2SPayload> ID = new Id<>(EDIT_ID);
+        public static final PacketCodec<RegistryByteBuf, CameraEditC2SPayload> CODEC = new PacketCodec<>() {
+            @Override
+            public CameraEditC2SPayload decode(RegistryByteBuf buf) {
+                return new CameraEditC2SPayload(
+                        PacketByteBuf.readUuid(buf), buf.readInt(),
+                        buf.readDouble(), buf.readDouble(), buf.readDouble(),
+                        buf.readFloat(), buf.readFloat(),
+                        PacketByteBuf.readUuid(buf), buf.readByte(),
+                        PacketByteBuf.readUuid(buf),
+                        buf.readFloat(), buf.readFloat(), buf.readFloat(),
+                        buf.readByte(), buf.readBoolean(), buf.readFloat(),
+                        buf.readString());
+            }
+            @Override
+            public void encode(RegistryByteBuf buf, CameraEditC2SPayload p) {
+                UUID nil = CameraItemUseC2SPayload.NIL;
+                PacketByteBuf.writeUuid(buf, p.cameraUuid);
+                buf.writeInt(p.flags);
+                buf.writeDouble(p.posX); buf.writeDouble(p.posY); buf.writeDouble(p.posZ);
+                buf.writeFloat(p.yaw); buf.writeFloat(p.pitch);
+                PacketByteBuf.writeUuid(buf, p.fixedTargetUuid != null ? p.fixedTargetUuid : nil);
+                buf.writeByte(p.fixerMode);
+                PacketByteBuf.writeUuid(buf, p.attachTargetUuid != null ? p.attachTargetUuid : nil);
+                buf.writeFloat(p.attachOffsetX); buf.writeFloat(p.attachOffsetY); buf.writeFloat(p.attachOffsetZ);
+                buf.writeByte(p.attachMode);
+                buf.writeBoolean(p.gravityEnabled);
+                buf.writeFloat(p.zoomLevel);
+                buf.writeString(p.customName != null ? p.customName : "");
+            }
+        };
+        @Override public Id<? extends CustomPayload> getId() { return ID; }
+    }
+
+    private static void registerEditHandler() {
+        ServerPlayNetworking.registerGlobalReceiver(CameraEditC2SPayload.ID, (payload, context) ->
+                context.server().execute(() -> handleCameraEdit(payload, context.player())));
+    }
+
+    private static void handleCameraEdit(CameraEditC2SPayload p, ServerPlayerEntity player) {
+        net.minecraft.server.world.ServerWorld world = (net.minecraft.server.world.ServerWorld) player.getWorld();
+        net.minecraft.entity.Entity ent = world.getEntity(p.cameraUuid());
+        if (!(ent instanceof CameraEntity cam)) return;
+
+        UUID nil = CameraItemUseC2SPayload.NIL;
+        int f = p.flags();
+
+        if ((f & CameraEditC2SPayload.FLAG_POS) != 0)
+            cam.requestTeleport(p.posX(), p.posY(), p.posZ());
+        if ((f & CameraEditC2SPayload.FLAG_ROTATION) != 0) {
+            cam.setYaw(p.yaw()); cam.setPitch(p.pitch());
+            cam.setHeadYaw(p.yaw()); cam.setBodyYaw(p.yaw());
+        }
+        if ((f & CameraEditC2SPayload.FLAG_FIXED) != 0)
+            cam.setFixedTargetUuid(p.fixedTargetUuid().equals(nil) ? null : p.fixedTargetUuid());
+        if ((f & CameraEditC2SPayload.FLAG_FIXER_MODE) != 0)
+            cam.setFixerMode(p.fixerMode());
+        if ((f & CameraEditC2SPayload.FLAG_ATTACH) != 0) {
+            UUID at = p.attachTargetUuid().equals(nil) ? null : p.attachTargetUuid();
+            if (at != null && cam.getAttachTargetUuid() == null) {
+                net.minecraft.entity.Entity target = world.getEntity(at);
+                if (target != null) cam.setAttachOffset(cam.getPos().subtract(target.getPos()));
+            }
+            cam.setAttachTargetUuid(at);
+        }
+        if ((f & CameraEditC2SPayload.FLAG_ATTACH_OFF) != 0)
+            cam.setAttachOffset(new net.minecraft.util.math.Vec3d(p.attachOffsetX(), p.attachOffsetY(), p.attachOffsetZ()));
+        if ((f & CameraEditC2SPayload.FLAG_ATTACH_MODE) != 0)
+            cam.setAttachMode(p.attachMode());
+        if ((f & CameraEditC2SPayload.FLAG_GRAVITY) != 0)
+            cam.setGravityEnabled(p.gravityEnabled());
+        if ((f & CameraEditC2SPayload.FLAG_ZOOM) != 0)
+            cam.setZoomLevel(p.zoomLevel());
+        if ((f & CameraEditC2SPayload.FLAG_NAME) != 0 && !p.customName().isBlank()) {
+            cam.setCustomName(net.minecraft.text.Text.literal(p.customName()));
+            cam.setCustomNameVisible(true);
+        }
+    }
+
     private static void registerCameraItemUseHandler() {
         ServerPlayNetworking.registerGlobalReceiver(CameraItemUseC2SPayload.ID, (payload, context) -> {
             ServerPlayerEntity player = context.player();
@@ -313,11 +439,36 @@ public final class CameraServerThing {
                     cam.refreshPositionAndAngles(spawnPos.getX() + 0.5, spawnPos.getY(), spawnPos.getZ() + 0.5, player.getYaw(), 0);
                     world.spawnEntity(cam);
                     player.sendMessage(net.minecraft.text.Text.literal("Camera placed"), true);
+                } else if (p.actionType() == 2) { // place at player position (from GUI)
+                    CameraEntity cam = new CameraEntity(Cameramod.CAMERA_ENTITY_ENTITY_TYPE, world);
+                    if (!p.cameraUuid().equals(nilUuid)) cam.setUuid(p.cameraUuid());
+                    cam.refreshPositionAndAngles(player.getX(), player.getY(), player.getZ(),
+                            player.getYaw(), player.getPitch());
+                    // blockFace bit 0 = "spawn without gravity" (player was flying)
+                    if ((p.blockFace() & 1) != 0) cam.setGravityEnabled(false);
+                    world.spawnEntity(cam);
+                    player.sendMessage(net.minecraft.text.Text.literal("Camera placed at player"), true);
                 }
             }
             case 1 -> { // Activator
-                if (p.actionType() == 0) { // toggle streaming
+                if (p.actionType() == 0) { // toggle streaming (restores saved cam if any)
                     ServerItems.CAMERA_ACTIVATOR.use(world, player, net.minecraft.util.Hand.MAIN_HAND);
+                } else if (p.actionType() == 2) { // toggle streaming, always player POV (no re-bind)
+                    UUID userId = player.getUuid();
+                    boolean isStreamingOn = Boolean.TRUE.equals(ServerItems.STREAMING_ENABLED.get(userId));
+                    UUID active = ServerItems.CAMERA_COMMAND_STORAGE.get(userId);
+                    if (active != null) {
+                        ServerItems.CAMERA_COMMAND_STORAGE.remove(userId);
+                        ServerItems.clearForcedChunks(world, active);
+                        ServerPlayNetworking.send(player, new CameraServerThing.UnbindCameraS2CPayload());
+                    }
+                    // Clear "last bound" so a later activator press doesn't restore it either.
+                    player.removeAttached(ServerItems.SAVED_CAMERA_ATTACHMENT);
+                    boolean nextOn = !isStreamingOn;
+                    ServerItems.STREAMING_ENABLED.put(userId, nextOn);
+                    ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 2, nextOn));
+                    player.sendMessage(net.minecraft.text.Text.literal(
+                            nextOn ? "Streaming enabled (player POV)" : "Streaming disabled"), true);
                 } else if (p.actionType() == 1) { // bind specific camera
                     if (!p.cameraUuid().equals(nilUuid)) {
                         net.minecraft.entity.Entity ent = world.getEntity(p.cameraUuid());
@@ -365,6 +516,8 @@ public final class CameraServerThing {
                         ServerItems.CAMERA_MOVER_UUIDS.put(userId, cam.getUuid());
                         ServerItems.CAMERA_MOVER_ACTIVENESS.put(userId, true);
                         cam.setBeingMoved(true);
+                        cam.setMoverPlayerUuid(userId);
+                        cam.setMoverDistance((float) dist);
                         ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 0, true));
                         player.sendMessage(net.minecraft.text.Text.literal("Camera mover started"), true);
                     }
@@ -372,7 +525,10 @@ public final class CameraServerThing {
                     UUID camUuid2 = ServerItems.CAMERA_MOVER_UUIDS.get(userId);
                     if (camUuid2 != null) {
                         net.minecraft.entity.Entity ent = world.getEntity(camUuid2);
-                        if (ent instanceof CameraEntity ce) ce.setBeingMoved(false);
+                        if (ent instanceof CameraEntity ce) {
+                            ce.setBeingMoved(false);
+                            ce.setMoverPlayerUuid(null);
+                        }
                     }
                     ServerItems.CAMERA_MOVER_DISTANCE.remove(userId);
                     ServerItems.CAMERA_MOVER_ACTIVENESS.remove(userId);

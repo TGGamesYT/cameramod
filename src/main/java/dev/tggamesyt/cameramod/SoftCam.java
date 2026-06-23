@@ -47,8 +47,21 @@ public class SoftCam {
 
         String os = System.getProperty("os.name", "").toLowerCase();
         if (!os.contains("win")) {
-            LOGGER.warn("SoftCam only supports Windows (detected: {}). Virtual camera disabled.", os);
+            LOGGER.info("Non-Windows OS detected ({}). Skipping virtual camera driver setup; the MJPEG stream at http://localhost:7236 is still available for OBS browser-source use.", os);
+            showNonWindowsObsNoticeOnce();
             return;
+        }
+
+        boolean hasPowerShell = isCommandAvailable("powershell");
+        if (!hasPowerShell) {
+            LOGGER.warn("PowerShell not found on PATH — virtual camera COM registration will be skipped.");
+            javax.swing.SwingUtilities.invokeLater(() ->
+                javax.swing.JOptionPane.showMessageDialog(null,
+                    "PowerShell is not on PATH.\n" +
+                    "Please add PowerShell to your PATH and restart Minecraft.\n" +
+                    "The virtual camera (OBS / Discord / etc.) will not be available until then.",
+                    "Minecraft Virtual Camera",
+                    javax.swing.JOptionPane.WARNING_MESSAGE));
         }
 
         try {
@@ -61,6 +74,8 @@ public class SoftCam {
 
             File dllFile = extractResource("/natives/" + subdir + "/softcam.dll", "softcam.dll");
             syncResource("/natives/uninstall_camera.bat", "uninstall_camera.bat");
+            syncResource("/natives/manual_install.bat", "manual_install.bat");
+            syncResource("/natives/if_not_working_run_this.bat", "if_not_working_run_this.bat");
 
             File oldInstaller = new File(NATIVE_DIR, "softcam_installer.exe");
             if (oldInstaller.exists() && oldInstaller.delete()) {
@@ -77,16 +92,52 @@ public class SoftCam {
 
             // Registration prompt + UAC + restart in a background thread so the
             // game keeps loading while the user decides.
-            if (!REGISTERED_MARKER.exists()) {
+            if (hasPowerShell && !REGISTERED_MARKER.exists()) {
                 final String dllPath = dllFile.getAbsolutePath();
                 Thread t = new Thread(() -> runRegistrationPrompt(dllPath), "Cameramod-SoftcamRegister");
                 t.setDaemon(true);
                 t.start();
             }
 
+        } catch (UnsatisfiedLinkError e) {
+            // The DLL was extracted but the OS refused to load it — almost always
+            // Windows security (Microsoft Defender / antivirus quarantine, or
+            // Windows 11 "Smart App Control" / an application-control policy)
+            // blocking the unsigned driver. The message text is localized, so we
+            // key off the exception type rather than matching strings.
+            LOGGER.error("Softcam driver was blocked from loading (likely Windows Defender / Smart App Control / antivirus): {}", e.getMessage());
+            showDriverBlockedNotice();
         } catch (Throwable e) {
             LOGGER.error("Failed to initialize Softcam native library", e);
         }
+    }
+
+    /** Surface a clear, actionable popup when the OS blocks the driver DLL. */
+    private static void showDriverBlockedNotice() {
+        final String folder = NATIVE_DIR.getAbsolutePath();
+        javax.swing.SwingUtilities.invokeLater(() ->
+            javax.swing.JOptionPane.showMessageDialog(null,
+                "Windows blocked the Minecraft Virtual Camera driver (softcam.dll), so the\n" +
+                "virtual webcam (OBS / Discord / browsers / etc.) is unavailable.\n" +
+                "\n" +
+                "This is Windows security blocking the unsigned driver — usually Microsoft\n" +
+                "Defender / an antivirus quarantining it, or Windows 11 'Smart App Control'\n" +
+                "/ an application-control policy.\n" +
+                "\n" +
+                "To fix it:\n" +
+                "  1. Open Windows Security.\n" +
+                "  2. Virus & threat protection > Manage settings > Exclusions > add this folder:\n" +
+                "       " + folder + "\n" +
+                "     (and restore softcam.dll if it was quarantined under Protection history).\n" +
+                "  3. If you use 'Smart App Control' (Windows 11), it blocks unsigned drivers and\n" +
+                "     can't make per-file exceptions — turn it off under\n" +
+                "     Windows Security > App & browser control > Smart App Control.\n" +
+                "  4. Restart Minecraft.\n" +
+                "\n" +
+                "The in-game camera and the MJPEG stream at http://localhost:7236 still work\n" +
+                "without the driver (add it as an OBS Browser source).",
+                "Minecraft Virtual Camera — driver blocked",
+                javax.swing.JOptionPane.ERROR_MESSAGE));
     }
 
     private static boolean isCommandAvailable(String command) {
@@ -97,34 +148,53 @@ public class SoftCam {
         }
     }
 
+    // Non-Windows users can't load the Softcam driver, but they can still
+    // consume the in-game camera feed via the MJPEG stream the mod runs on
+    // localhost:7236. Tell them how exactly once — a marker file in the
+    // Fabric config dir suppresses the popup on subsequent launches.
+    private static void showNonWindowsObsNoticeOnce() {
+        try {
+            java.nio.file.Path configDir = net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir();
+            java.nio.file.Path marker = configDir.resolve("cameramod-obs-notice.shown");
+            if (java.nio.file.Files.exists(marker)) return;
+            java.nio.file.Files.createDirectories(configDir);
+            java.nio.file.Files.createFile(marker);
+        } catch (Throwable t) {
+            // If we can't write the marker we'd rather re-show the popup than crash.
+            LOGGER.warn("Could not write OBS-notice marker", t);
+        }
+        javax.swing.SwingUtilities.invokeLater(() ->
+            javax.swing.JOptionPane.showMessageDialog(null,
+                "Cameramod's virtual camera output uses a Windows-only driver, so it's disabled on this OS.\n" +
+                "\n" +
+                "You can still use the mod by routing the in-game feed through OBS:\n" +
+                "  1. Install OBS Studio if you don't have it: https://obsproject.com\n" +
+                "  2. In OBS, add a Browser source with URL: http://localhost:7236\n" +
+                "  3. Click 'Start Virtual Camera' in OBS — that camera can then be\n" +
+                "     selected in Discord / Zoom / browsers / etc.",
+                "Minecraft Virtual Camera",
+                javax.swing.JOptionPane.INFORMATION_MESSAGE));
+    }
+
     private static void runRegistrationPrompt(String dllPath) {
         try {
-            if (!isCommandAvailable("powershell")) {
-                javax.swing.SwingUtilities.invokeLater(() ->
-                    javax.swing.JOptionPane.showMessageDialog(null,
-                        "Virtual camera setup requires PowerShell, but it was not found on PATH.\n" +
-                        "Please ensure PowerShell is installed and available.",
-                        "Minecraft Virtualcam",
-                        javax.swing.JOptionPane.ERROR_MESSAGE));
-                return;
-            }
             LOGGER.info("Softcam driver not registered. Asking user (background thread)...");
             String markerPath = REGISTERED_MARKER.getAbsolutePath().replace("'", "''");
             int exitCode = new ProcessBuilder("powershell", "-Command",
                     "Add-Type -AssemblyName PresentationFramework; " +
-                    "$ask = [System.Windows.MessageBox]::Show('Install the Minecraft Virtualcam driver? This lets the in-game camera show up as a webcam in OBS, Discord, browsers, etc. Requires admin rights and a system restart.', 'Minecraft Virtualcam', 'YesNo', 'Question'); " +
+                    "$ask = [System.Windows.MessageBox]::Show('Install the Minecraft Virtual Camera driver? This lets the in-game camera show up as a webcam in OBS, Discord, browsers, etc. Requires admin rights and a system restart.', 'Minecraft Virtual Camera', 'YesNo', 'Question'); " +
                     "if ($ask -ne 'Yes') { exit 2 } " +
                     "$registered = $false; " +
                     "do { try { Start-Process regsvr32 -ArgumentList '/s \"" + dllPath + "\"' -Verb runAs -Wait; $registered = $true } " +
-                    "catch { $r = [System.Windows.MessageBox]::Show('Registration was denied or failed. Try again?', 'Minecraft Virtualcam', 'YesNo', 'Warning'); if ($r -ne 'Yes') { break } } } " +
+                    "catch { $r = [System.Windows.MessageBox]::Show('Registration was denied or failed. Try again?', 'Minecraft Virtual Camera', 'YesNo', 'Warning'); if ($r -ne 'Yes') { break } } } " +
                     "while (-not $registered); " +
                     "if ($registered) { " +
                     "  try { New-Item -ItemType File -Path '" + markerPath + "' -Force | Out-Null } catch {}; " +
-                    "  $r2 = [System.Windows.MessageBox]::Show('Virtual camera registered. Restart your computer to apply changes. Restart now?', 'Minecraft Virtualcam', 'YesNo', 'Information'); " +
+                    "  $r2 = [System.Windows.MessageBox]::Show('Virtual camera registered. Restart your computer to apply changes. Restart now?', 'Minecraft Virtual Camera', 'YesNo', 'Information'); " +
                     "  if ($r2 -eq 'Yes') { Start-Sleep -Milliseconds 500; Restart-Computer -Force }; " +
                     "  exit 0 " +
                     "} " +
-                    "else { [System.Windows.MessageBox]::Show('Virtual camera was not registered. Restart Minecraft to try again.', 'Minecraft Virtualcam', 'OK', 'Warning'); exit 1 }"
+                    "else { [System.Windows.MessageBox]::Show('Virtual camera was not registered. Restart Minecraft to try again.', 'Minecraft Virtual Camera', 'OK', 'Warning'); exit 1 }"
             ).start().waitFor();
             // Fallback: create marker from Java side too (in case PS script couldn't write it)
             if (exitCode == 0 && !REGISTERED_MARKER.exists() && !REGISTERED_MARKER.createNewFile()) {

@@ -1,5 +1,8 @@
 {
   "itemGroup.Cameramod": "Cameramod",
+  "cameramod.toast.streaming.title": "Cameramod",
+  "cameramod.toast.streaming.on": "Title-screen streaming enabled",
+  "cameramod.toast.streaming.off": "Title-screen streaming disabled",
   "entity.cameramod.camera": "Camera",
   "item.cameramod.camera_item": "Camera",
   "item.cameramod.camera_item.tooltip.1": "Places a camera entity in the world.",
@@ -39,5 +42,7 @@
 
   "item.cameramod.camera_remover": "Camera Remover",
   "item.cameramod.camera_remover.tooltip.1": "Permanently removes a camera entity.",
-  "item.cameramod.camera_remover.tooltip.2": "Right-click a camera to remove it."
+  "item.cameramod.camera_remover.tooltip.2": "Right-click a camera to remove it.",
+
+  "key.cameramod.camera_mode": "Camera Mode (tap toggle, hold for GUI)"
 }

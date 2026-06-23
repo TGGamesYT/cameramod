@@ -8,6 +8,7 @@ import net.minecraft.entity.data.DataTracker;
 import net.minecraft.entity.data.TrackedData;
 import net.minecraft.entity.data.TrackedDataHandlerRegistry;
 import net.minecraft.entity.attribute.EntityAttributes;
+import net.minecraft.item.ItemStack;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.storage.ReadView;
 import net.minecraft.storage.WriteView;
@@ -57,6 +58,16 @@ public class CameraEntity extends LivingEntity {
     private static final TrackedData<Byte> ATTACH_MODE =
             DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.BYTE);
 
+    // UUID of the player currently moving this camera with the Camera Mover.
+    // Synced so the client can position the camera per-frame from the local
+    // player's lerped pos + rotation, instead of waiting for the 20 Hz server
+    // requestTeleport stream (which stutters when the player flies fast).
+    // "" = nobody is moving it.
+    private static final TrackedData<String> MOVER_PLAYER =
+            DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.STRING);
+    private static final TrackedData<Float> MOVER_DISTANCE =
+            DataTracker.registerData(CameraEntity.class, TrackedDataHandlerRegistry.FLOAT);
+
     public static DefaultAttributeContainer.Builder createCameraAttributes() {
         return LivingEntity.createLivingAttributes()
                 .add(EntityAttributes.MAX_HEALTH, 1.0)
@@ -82,6 +93,8 @@ public class CameraEntity extends LivingEntity {
         builder.add(ATTACH_OFFSET_Y, 0.0f);
         builder.add(ATTACH_OFFSET_Z, 0.0f);
         builder.add(ATTACH_MODE, (byte) 0);
+        builder.add(MOVER_PLAYER, "");
+        builder.add(MOVER_DISTANCE, 5.0f);
     }
 
     // --- Zoom ---
@@ -179,6 +192,25 @@ public class CameraEntity extends LivingEntity {
         this.dataTracker.set(ATTACH_MODE, mode);
     }
 
+    // --- Mover state (synced for per-frame client-side prediction) ---
+    public UUID getMoverPlayerUuid() {
+        String s = this.dataTracker.get(MOVER_PLAYER);
+        if (s == null || s.isEmpty()) return null;
+        try { return UUID.fromString(s); } catch (IllegalArgumentException e) { return null; }
+    }
+
+    public void setMoverPlayerUuid(UUID uuid) {
+        this.dataTracker.set(MOVER_PLAYER, uuid != null ? uuid.toString() : "");
+    }
+
+    public float getMoverDistance() {
+        return this.dataTracker.get(MOVER_DISTANCE);
+    }
+
+    public void setMoverDistance(float distance) {
+        this.dataTracker.set(MOVER_DISTANCE, distance);
+    }
+
 /**
      * Check if there's a solid block directly below the camera's feet.
      * Uses the entity's actual Y coordinate (minus a small epsilon) to avoid
@@ -199,6 +231,28 @@ public class CameraEntity extends LivingEntity {
     private boolean clientOnly = false;
     public void setClientOnly(boolean b) { this.clientOnly = b; }
     public boolean isClientOnly() { return this.clientOnly; }
+
+    // Client-side rotation lock. While EditCameraScreen's "Rotate" mode drives
+    // this camera, the client owns its rotation. A server-tracked entity is
+    // otherwise interpolated toward the values the server last broadcast, so
+    // every tick the interpolator drags the yaw/pitch back toward a stale
+    // value — that fight is the visible rotate "vibration". While locked, tick()
+    // cancels the interpolation and re-asserts the client's rotation.
+    private boolean clientRotationLocked = false;
+    private float   clientLockedYaw   = 0f;
+    private float   clientLockedPitch = 0f;
+
+    /** Lock client-side rotation to the given values (also used to update them). */
+    public void cameramod$lockClientRotation(float yaw, float pitch) {
+        this.clientRotationLocked = true;
+        this.clientLockedYaw   = yaw;
+        this.clientLockedPitch = pitch;
+    }
+
+    /** Release the rotation lock so normal server interpolation resumes. */
+    public void cameramod$unlockClientRotation() {
+        this.clientRotationLocked = false;
+    }
 
     // Expose protected Entity.unsetRemoved() so CameramodClient can re-add
     // a client-only camera that was evicted from the world entity list.
@@ -260,6 +314,39 @@ public class CameraEntity extends LivingEntity {
         }
 
         super.tick();
+
+        // Client-side: when the client owns this camera's rotation/position (it's
+        // being driven every frame in WorldRenderEvents.START by the fixer or an
+        // attachment), clear the position interpolator that super.tick() advances.
+        // PositionInterpolator.tick() calls setPosition()/setRotation() toward the
+        // server's last-broadcast values every tick — CameraEntityLerpMixin cancels
+        // the legacy lerpPosAndRotation path but NOT this interpolator. Left running,
+        // it drags the camera back toward the stale server rotation each tick while
+        // the per-frame fixer pulls it toward the target: that tug-of-war is the
+        // "rapid look-at oscillation" seen when a fixed camera is off-screen (the
+        // entity still ticks, but the renderer never refreshes its visual state).
+        if (this.getWorld().isClient && !this.clientRotationLocked
+                && (getFixedTargetUuid() != null || getAttachTargetUuid() != null)) {
+            this.getInterpolator().clear();
+        }
+
+        // Client-side: while the edit screen is rotating this camera, override
+        // the server-driven interpolation that super.tick() just applied so the
+        // camera holds exactly the rotation the user's mouse produced.
+        if (this.getWorld().isClient && this.clientRotationLocked) {
+            this.getInterpolator().clear();
+            this.headTrackingIncrements = 0;
+            this.setYaw(this.clientLockedYaw);
+            this.setPitch(this.clientLockedPitch);
+            this.setHeadYaw(this.clientLockedYaw);
+            this.setBodyYaw(this.clientLockedYaw);
+            // Match the previous-tick values so render interpolation doesn't
+            // smear between a stale and a fresh angle for one frame.
+            this.lastYaw      = this.clientLockedYaw;
+            this.lastPitch    = this.clientLockedPitch;
+            this.lastHeadYaw  = this.clientLockedYaw;
+            this.lastBodyYaw  = this.clientLockedYaw;
+        }
     }
 
     @Override
@@ -280,6 +367,11 @@ public class CameraEntity extends LivingEntity {
     @Override
     public boolean handleFallDamage(double fallDistance, float damagePerDistance, DamageSource damageSource) {
         return false;
+    }
+
+    @Override
+    public ItemStack getPickBlockStack() {
+        return new ItemStack(ServerItems.CAMERA_ITEM);
     }
 
     @Override

@@ -53,9 +53,27 @@ public class Cameramod implements ModInitializer {
     public static final GameRules.Key<GameRules.BooleanRule> CAMERA_NAME_TAGS =
             GameRuleRegistry.register("cameraNameTags", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(true));
 
-    public static int camwidth = 860;
-    public static int camheight = 480;
-    public static float camframerate = 20f;
+    public static final GameRules.Key<GameRules.BooleanRule> CAMERA_GUI_MODE =
+            GameRuleRegistry.register("cameraGuiMode", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(false));
+
+    public static final GameRules.Key<GameRules.BooleanRule> CAMERA_SHOW_PLAYER_GUIS =
+            GameRuleRegistry.register("cameraShowPlayerGuis", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(false));
+
+    // Max FPS gates. Render at max(stream, virtual); SoftCam send is
+    // further gated by VIRTUAL_FPS so feeding it faster than its driver
+    // wants doesn't burn JNI calls. Both default to 30.
+    public static final GameRules.Key<GameRules.IntRule> CAMERA_STREAM_FPS =
+            GameRuleRegistry.register("cameraStreamFps", GameRules.Category.MISC, GameRuleFactory.createIntRule(30, 1, 240));
+
+    public static final GameRules.Key<GameRules.IntRule> CAMERA_VIRTUAL_FPS =
+            GameRuleRegistry.register("cameraVirtualFps", GameRules.Category.MISC, GameRuleFactory.createIntRule(30, 1, 240));
+
+    // Bootstrap defaults; CameramodClient.onInitializeClient overwrites these
+    // with the primary monitor's resolution (capped at Full HD) before the
+    // virtual camera is created.
+    public static int camwidth = 1280;
+    public static int camheight = 720;
+    public static float camframerate = 30f;
     public static Pointer softcamCamera;
 
     @Override
@@ -69,11 +87,13 @@ public class Cameramod implements ModInitializer {
         PayloadTypeRegistry.playS2C().register(CameraServerThing.BindCameraS2CPayload.ID, CameraServerThing.BindCameraS2CPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(CameraServerThing.UnbindCameraS2CPayload.ID, CameraServerThing.UnbindCameraS2CPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(CameraServerThing.CameraItemStateS2CPayload.ID, CameraServerThing.CameraItemStateS2CPayload.CODEC);
+        PayloadTypeRegistry.playS2C().register(CameraServerThing.CameraIntSettingS2CPayload.ID, CameraServerThing.CameraIntSettingS2CPayload.CODEC);
 
         // C2S packets
         PayloadTypeRegistry.playC2S().register(CameraServerThing.CameraScrollC2SPayload.ID, CameraServerThing.CameraScrollC2SPayload.CODEC);
         PayloadTypeRegistry.playC2S().register(CameraServerThing.CameraOrientC2SPayload.ID, CameraServerThing.CameraOrientC2SPayload.CODEC);
         PayloadTypeRegistry.playC2S().register(CameraServerThing.CameraItemUseC2SPayload.ID, CameraServerThing.CameraItemUseC2SPayload.CODEC);
+        PayloadTypeRegistry.playC2S().register(CameraServerThing.CameraEditC2SPayload.ID, CameraServerThing.CameraEditC2SPayload.CODEC);
 
         CameraServerThing.register();
         ServerItems.registerItems();

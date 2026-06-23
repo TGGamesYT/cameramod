@@ -1,0 +1,9 @@
+{
+  "pack": {
+    "pack_format": 64,
+    "supported_formats": [64, 9999],
+    "min_format": 64,
+    "max_format": 9999,
+    "description": "Cameramod — animated \"off\" screen for the camera stream (Minecraft 1.21.8+)"
+  }
+}

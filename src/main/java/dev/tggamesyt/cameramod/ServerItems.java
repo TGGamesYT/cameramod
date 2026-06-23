@@ -94,6 +94,8 @@ public class ServerItems {
     private static boolean lastCameraSeesChat = false;
     private static boolean lastCameraFlipped = false;
     private static boolean lastCameraNameTags = true;
+    private static boolean lastCameraGuiMode = false;
+    private static boolean lastCameraShowPlayerGuis = false;
 
     // Track force-loaded chunks per camera UUID so we can unload them when camera moves/dies
     private static final HashMap<UUID, Set<Long>> FORCED_CHUNKS = new HashMap<>();
@@ -117,9 +119,17 @@ public class ServerItems {
             boolean seesChat = server.getGameRules().getBoolean(Cameramod.CAMERA_SEES_CHAT);
             boolean flipped = server.getGameRules().getBoolean(Cameramod.CAMERA_FLIPPED);
             boolean nameTags = server.getGameRules().getBoolean(Cameramod.CAMERA_NAME_TAGS);
+            boolean guiMode = server.getGameRules().getBoolean(Cameramod.CAMERA_GUI_MODE);
+            boolean showPlayerGuis = server.getGameRules().getBoolean(Cameramod.CAMERA_SHOW_PLAYER_GUIS);
             ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 3, seesChat));
             ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 4, flipped));
             ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 5, nameTags));
+            ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 6, guiMode));
+            ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 7, showPlayerGuis));
+            int streamFps  = server.getGameRules().getInt(Cameramod.CAMERA_STREAM_FPS);
+            int virtualFps = server.getGameRules().getInt(Cameramod.CAMERA_VIRTUAL_FPS);
+            ServerPlayNetworking.send(player, new CameraServerThing.CameraIntSettingS2CPayload((byte) 0, streamFps));
+            ServerPlayNetworking.send(player, new CameraServerThing.CameraIntSettingS2CPayload((byte) 1, virtualFps));
 
             String savedStr = player.getAttached(SAVED_CAMERA_ATTACHMENT);
             if (savedStr != null) {
@@ -194,6 +204,11 @@ public class ServerItems {
         if (dist == null) return;
         dist = Math.max(1.0, dist + delta * 0.5);
         CAMERA_MOVER_DISTANCE.put(userId, dist);
+        UUID camUuid = CAMERA_MOVER_UUIDS.get(userId);
+        if (camUuid != null && player.getWorld() instanceof ServerWorld sw) {
+            Entity e = sw.getEntity(camUuid);
+            if (e instanceof CameraEntity ce) ce.setMoverDistance(dist.floatValue());
+        }
         player.sendMessage(Text.literal("Distance: " + String.format("%.1f", dist)), true);
     }
 
@@ -557,6 +572,8 @@ public class ServerItems {
             CAMERA_MOVER_UUIDS.put(userId, cam.getUuid());
             CAMERA_MOVER_ACTIVENESS.put(userId, true);
             cam.setBeingMoved(true);
+            cam.setMoverPlayerUuid(userId);
+            cam.setMoverDistance((float) dist);
             if (user instanceof ServerPlayerEntity sp) {
                 ServerPlayNetworking.send(sp, new CameraServerThing.CameraItemStateS2CPayload((byte) 0, true));
             }
@@ -568,7 +585,10 @@ public class ServerItems {
             UUID camUuid = CAMERA_MOVER_UUIDS.get(userId);
             if (camUuid != null && user.getWorld() instanceof ServerWorld sw) {
                 Entity e = sw.getEntity(camUuid);
-                if (e instanceof CameraEntity ce) ce.setBeingMoved(false);
+                if (e instanceof CameraEntity ce) {
+                    ce.setBeingMoved(false);
+                    ce.setMoverPlayerUuid(null);
+                }
             }
             CAMERA_MOVER_DISTANCE.remove(userId);
             CAMERA_MOVER_ACTIVENESS.remove(userId);
@@ -934,14 +954,22 @@ public class ServerItems {
         boolean seesChat = server.getGameRules().getBoolean(Cameramod.CAMERA_SEES_CHAT);
         boolean flipped = server.getGameRules().getBoolean(Cameramod.CAMERA_FLIPPED);
         boolean nameTags = server.getGameRules().getBoolean(Cameramod.CAMERA_NAME_TAGS);
-        if (seesChat != lastCameraSeesChat || flipped != lastCameraFlipped || nameTags != lastCameraNameTags) {
+        boolean guiMode = server.getGameRules().getBoolean(Cameramod.CAMERA_GUI_MODE);
+        boolean showPlayerGuis = server.getGameRules().getBoolean(Cameramod.CAMERA_SHOW_PLAYER_GUIS);
+        if (seesChat != lastCameraSeesChat || flipped != lastCameraFlipped
+                || nameTags != lastCameraNameTags || guiMode != lastCameraGuiMode
+                || showPlayerGuis != lastCameraShowPlayerGuis) {
             lastCameraSeesChat = seesChat;
             lastCameraFlipped = flipped;
             lastCameraNameTags = nameTags;
+            lastCameraGuiMode = guiMode;
+            lastCameraShowPlayerGuis = showPlayerGuis;
             for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
                 ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 3, seesChat));
                 ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 4, flipped));
                 ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 5, nameTags));
+                ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 6, guiMode));
+                ServerPlayNetworking.send(player, new CameraServerThing.CameraItemStateS2CPayload((byte) 7, showPlayerGuis));
             }
         }
 

@@ -2,16 +2,23 @@ package dev.tggamesyt.cameramod.client;
 
 import dev.tggamesyt.cameramod.Cameramod;
 
+import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.MemoryCacheImageOutputStream;
 import java.awt.image.BufferedImage;
-import java.awt.image.DataBufferInt;
+import java.awt.image.DataBufferByte;
 import java.io.*;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 public class CameraStreamServer {
 
@@ -21,15 +28,41 @@ public class CameraStreamServer {
     private static final Set<OutputStream> clients = Collections.synchronizedSet(new LinkedHashSet<>());
 
     // Single background thread handles JPEG encoding + socket writes so the render thread isn't blocked.
-    private static final ExecutorService pushExecutor = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "CameraStream-push");
-        t.setDaemon(true);
-        return t;
-    });
+    // SynchronousQueue (0 capacity) + AbortPolicy: if the encoder thread is already busy the new frame
+    // task is rejected (execute() throws RejectedExecutionException) rather than queued, so pushFrame()
+    // can recycle the frame buffer instead of leaking it.  This prevents the unbounded queue growth
+    // that caused the OOM crash and the multi-second stream delay when production outpaced encoding.
+    private static final ExecutorService pushExecutor = new ThreadPoolExecutor(
+            1, 1, 0L, TimeUnit.MILLISECONDS,
+            new SynchronousQueue<>(),
+            r -> { Thread t = new Thread(r, "CameraStream-push"); t.setDaemon(true); return t; },
+            new ThreadPoolExecutor.AbortPolicy()
+    );
+
+    // Reusable frame-copy buffers. pushFrame() must give the encoder thread its own copy of the
+    // render buffer (the render thread overwrites the source in place every frame). Allocating
+    // that copy fresh each frame churned multi-MB "humongous" arrays that fragmented the G1 heap
+    // until a copy allocation OOM'd — pooling keeps a tiny fixed set of buffers alive instead.
+    private static final ArrayDeque<byte[]> framePool = new ArrayDeque<>();
+    private static final int FRAME_POOL_MAX = 3;
 
     // Reused image buffer (encoder thread only — no concurrent access).
+    // TYPE_3BYTE_BGR matches the captured frame layout exactly, so we can
+    // System.arraycopy straight in instead of looping per pixel to swizzle
+    // bytes into a packed int.  At 1080p that loop alone was several ms
+    // per frame and was the encoder's bottleneck — arraycopy is one
+    // memcpy.
     private static BufferedImage streamImage;
-    private static int[] streamPixels;
+    private static byte[] streamBytes;
+
+    // Cached JPEG encoder + reusable byte buffer.  ImageIO.write() does a
+    // ServiceLoader lookup for the codec on every call and allocates a fresh
+    // ByteArrayOutputStream — both add up at high frame rates.  Reusing them
+    // measurably increases throughput (encoder-bound previously dropped frames
+    // and capped effective stream FPS).
+    private static ImageWriter jpegWriter;
+    private static ImageWriteParam jpegParams;
+    private static final ByteArrayOutputStream jpegBuffer = new ByteArrayOutputStream(1 << 16);
 
     // Most-recently-pushed JPEG. New clients receive it immediately so the browser
     // never stalls waiting for the first frame. Volatile: written on push thread, read on accept thread.
@@ -87,35 +120,40 @@ public class CameraStreamServer {
         return !clients.isEmpty();
     }
 
-    // Poll /ping every 1s — independent of the long-running /stream connection.
-    // When ping fails (game/server restart), we know to reload the <img> src so
-    // the browser drops its stale connection and reconnects to the new server.
-    // The <img> onerror alone is unreliable: MJPEG connections can hang in a
-    // "headers received but no new frames" state forever after a server crash.
+    // Simple wrapper that works in both regular browsers AND OBS Studio's CEF
+    // browser source. Avoid fetch() / setInterval() based health-check: CEF
+    // sometimes blocks fetch under its security model, which broke the page
+    // entirely in OBS.
+    //
+    // Reconnection strategy:
+    //  - onerror: the connection was rejected or closed. Reload after 1s.
+    //  - Watchdog ping via XMLHttpRequest to /ping every 3s. If the ping
+    //    fails or times out twice in a row, reload the stream. Same-origin
+    //    XHR is allowed under CEF; this catches the case where the MJPEG
+    //    connection technically stays open but the server has hung or the
+    //    proxy in between dropped data.
     private static final String INDEX_HTML =
         "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Camera Stream</title>" +
-        "<style>*{margin:0;padding:0}body{background:#000;width:100vw;height:100vh;display:flex;" +
-        "align-items:center;justify-content:center}img{max-width:100%;max-height:100vh}" +
-        "#status{position:fixed;top:8px;left:50%;transform:translateX(-50%);color:#fff;" +
-        "background:rgba(0,0,0,.6);padding:2px 8px;border-radius:4px;font-family:sans-serif;" +
-        "font-size:13px;display:none}</style></head><body>" +
-        "<div id='status'></div><img id='s'>" +
+        "<style>html,body{margin:0;padding:0;background:#000;width:100%;height:100%;overflow:hidden}" +
+        "img{width:100%;height:100%;object-fit:contain;display:block}</style>" +
+        "</head><body><img id='s' src='/stream'>" +
         "<script>" +
-        "var s=document.getElementById('s'),st=document.getElementById('status');" +
-        "var serverUp=null;" + // null=unknown, true=up, false=down
-        "function show(m){st.textContent=m;st.style.display='block';}" +
-        "function hide(){st.style.display='none';}" +
-        "function reload(){s.src='/stream?'+Date.now();}" +
+        "var s=document.getElementById('s');" +
+        "var failures=0;" +
+        "function reload(){failures=0;s.src='/stream?'+Date.now();}" +
+        "s.onerror=function(){setTimeout(reload,1000);};" +
         "function ping(){" +
-        "  fetch('/ping?'+Date.now(),{cache:'no-store'}).then(function(r){" +
-        "    if(!r.ok)throw 0;" +
-        "    if(serverUp!==true){serverUp=true;hide();reload();}" +
-        "  }).catch(function(){" +
-        "    if(serverUp!==false){serverUp=false;show('Reconnecting…');}" +
-        "  });" +
+          "try{" +
+            "var x=new XMLHttpRequest();" +
+            "x.open('GET','/ping?'+Date.now(),true);" +
+            "x.timeout=2500;" +
+            "x.onload=function(){failures=0;setTimeout(ping,3000);};" +
+            "x.onerror=function(){failures++;if(failures>=2)reload();setTimeout(ping,3000);};" +
+            "x.ontimeout=x.onerror;" +
+            "x.send();" +
+          "}catch(e){setTimeout(ping,3000);}" +
         "}" +
-        "s.onerror=function(){show('Reconnecting…');setTimeout(reload,1000);};" +
-        "reload();ping();setInterval(ping,1000);" +
+        "setTimeout(ping,3000);" +
         "</script></body></html>";
 
     private static void handleClient(Socket socket) {
@@ -140,13 +178,13 @@ public class CameraStreamServer {
             out = socket.getOutputStream();
 
             if (path.equals("/ping")) {
-                // Liveness probe — short response, immediate close. The wrapper
-                // polls this so a dead server is detected even if the long-lived
-                // /stream connection appears "still open" to the browser.
-                String resp = "HTTP/1.0 200 OK\r\n" +
+                // Liveness probe — kept for any tooling still polling it, but
+                // the bundled wrapper page no longer uses it.
+                String resp = "HTTP/1.1 200 OK\r\n" +
                         "Content-Type: text/plain\r\n" +
                         "Content-Length: 2\r\n" +
-                        "Cache-Control: no-cache\r\n" +
+                        "Cache-Control: no-cache, no-store, must-revalidate\r\n" +
+                        "Pragma: no-cache\r\n" +
                         "Access-Control-Allow-Origin: *\r\n" +
                         "Connection: close\r\n\r\nok";
                 out.write(resp.getBytes());
@@ -155,12 +193,14 @@ public class CameraStreamServer {
             }
 
             if (!path.equals("/stream")) {
-                // Serve the HTML wrapper page
                 byte[] body = INDEX_HTML.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                String resp = "HTTP/1.0 200 OK\r\n" +
+                String resp = "HTTP/1.1 200 OK\r\n" +
                         "Content-Type: text/html; charset=utf-8\r\n" +
                         "Content-Length: " + body.length + "\r\n" +
-                        "Cache-Control: no-cache\r\n" +
+                        "Cache-Control: no-cache, no-store, must-revalidate\r\n" +
+                        "Pragma: no-cache\r\n" +
+                        "Access-Control-Allow-Origin: *\r\n" +
+                        "X-Content-Type-Options: nosniff\r\n" +
                         "Connection: close\r\n\r\n";
                 out.write(resp.getBytes());
                 out.write(body);
@@ -168,10 +208,16 @@ public class CameraStreamServer {
                 return;
             }
 
-            // Serve MJPEG stream
-            String response = "HTTP/1.0 200 OK\r\n" +
+            // Serve MJPEG stream — HTTP/1.1 + thorough no-cache + CORS so OBS
+            // Studio's CEF browser source picks it up. Some CEF builds choke
+            // on HTTP/1.0 multipart and silently render only the first frame.
+            String response = "HTTP/1.1 200 OK\r\n" +
                     "Content-Type: multipart/x-mixed-replace; boundary=" + BOUNDARY + "\r\n" +
-                    "Cache-Control: no-cache\r\n" +
+                    "Cache-Control: no-cache, no-store, must-revalidate, private\r\n" +
+                    "Pragma: no-cache\r\n" +
+                    "Expires: 0\r\n" +
+                    "Access-Control-Allow-Origin: *\r\n" +
+                    "X-Content-Type-Options: nosniff\r\n" +
                     "Connection: close\r\n\r\n";
             out.write(response.getBytes());
             out.flush();
@@ -201,8 +247,35 @@ public class CameraStreamServer {
      */
     public static void pushFrame(byte[] bgr, int w, int h) {
         if (clients.isEmpty()) return;
-        byte[] copy = Arrays.copyOf(bgr, bgr.length);
-        pushExecutor.execute(() -> pushFrameAsync(copy, w, h));
+        byte[] copy = acquireFrameBuffer(bgr.length);
+        System.arraycopy(bgr, 0, copy, 0, bgr.length);
+        try {
+            pushExecutor.execute(() -> {
+                try { pushFrameAsync(copy, w, h); }
+                finally { releaseFrameBuffer(copy); }
+            });
+        } catch (RejectedExecutionException busy) {
+            // Encoder thread still working on the previous frame — drop this
+            // frame and recycle the buffer immediately.
+            releaseFrameBuffer(copy);
+        }
+    }
+
+    private static byte[] acquireFrameBuffer(int len) {
+        synchronized (framePool) {
+            byte[] b;
+            while ((b = framePool.poll()) != null) {
+                if (b.length == len) return b;
+                // Wrong size (resolution changed) — drop it and keep looking.
+            }
+        }
+        return new byte[len];
+    }
+
+    private static void releaseFrameBuffer(byte[] b) {
+        synchronized (framePool) {
+            if (framePool.size() < FRAME_POOL_MAX) framePool.offer(b);
+        }
     }
 
     private static void pushFrameAsync(byte[] bgr, int w, int h) {
@@ -236,29 +309,40 @@ public class CameraStreamServer {
     }
 
     /**
-     * Convert BGR24 bottom-to-top frame to JPEG (top-to-bottom RGB).
-     * Reuses a static BufferedImage so allocation is amortized.
+     * Encode a BGR24 top-down frame as JPEG.  Reuses a static BufferedImage
+     * and a cached ImageWriter so neither the framebuffer nor the codec
+     * lookup is re-allocated per frame.
      */
     private static byte[] bgrToJpeg(byte[] bgr, int w, int h) {
         try {
             if (streamImage == null || streamImage.getWidth() != w || streamImage.getHeight() != h) {
-                streamImage = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
-                streamPixels = ((DataBufferInt) streamImage.getRaster().getDataBuffer()).getData();
+                streamImage = new BufferedImage(w, h, BufferedImage.TYPE_3BYTE_BGR);
+                streamBytes = ((DataBufferByte) streamImage.getRaster().getDataBuffer()).getData();
             }
-            for (int y = 0; y < h; y++) {
-                int srcBase = y * w * 3;
-                int dstBase = y * w;
-                for (int x = 0; x < w; x++) {
-                    int si = srcBase + x * 3;
-                    int b = bgr[si] & 0xFF;
-                    int g = bgr[si + 1] & 0xFF;
-                    int r = bgr[si + 2] & 0xFF;
-                    streamPixels[dstBase + x] = (r << 16) | (g << 8) | b;
-                }
+            int needed = w * h * 3;
+            int copyLen = Math.min(bgr.length, Math.min(streamBytes.length, needed));
+            System.arraycopy(bgr, 0, streamBytes, 0, copyLen);
+            if (jpegWriter == null) {
+                java.util.Iterator<ImageWriter> it = ImageIO.getImageWritersByFormatName("jpeg");
+                if (!it.hasNext()) return null;
+                jpegWriter = it.next();
+                jpegParams = jpegWriter.getDefaultWriteParam();
+                jpegParams.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+                // 0.75 is the ImageIO default; bumping slightly trades a few
+                // percent more bytes per frame for noticeably less encode time
+                // and crisper text in the stream.
+                jpegParams.setCompressionQuality(0.80f);
             }
-            ByteArrayOutputStream baos = new ByteArrayOutputStream(w * h / 4);
-            ImageIO.write(streamImage, "jpeg", baos);
-            return baos.toByteArray();
+            jpegBuffer.reset();
+            MemoryCacheImageOutputStream ios = new MemoryCacheImageOutputStream(jpegBuffer);
+            try {
+                jpegWriter.setOutput(ios);
+                jpegWriter.write(null, new IIOImage(streamImage, null, null), jpegParams);
+            } finally {
+                ios.close();
+                jpegWriter.setOutput(null);
+            }
+            return jpegBuffer.toByteArray();
         } catch (Exception e) {
             return null;
         }
