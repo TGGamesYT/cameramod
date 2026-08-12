@@ -129,6 +129,12 @@ public class EditCameraScreen extends Screen {
 
     // Bottom-row button references for re-rendering over the bottom bar overdraw.
     private ButtonWidget doneBtn, cancelBtn, removeBtn;
+    // Top-left "back to camera list" button.
+    private ButtonWidget backBtn;
+    // Active toggle button — its label is refreshed live each frame from the real
+    // bound-camera state so it can't desync (server-mode toggles round-trip, so
+    // the state isn't updated by the time toggleActive()'s clearAndInit() runs).
+    private ButtonWidget activeBtn;
 
     // Previously-focused element; when focus leaves a text field we commit its
     // value (so clicking away from an input saves it).
@@ -236,7 +242,7 @@ public class EditCameraScreen extends Screen {
         int nameW = cW - 86;
         nameField = mkField(cX, ly, nameW, nameVal, t -> { nameVal = t; applyLive(); });
         boolean active = cameraUuid.equals(CameraRenderer.getBoundCameraUuid());
-        mkBtn(cX + nameW + 4, ly, 80, "Active: " + (active ? "ON" : "OFF"),
+        activeBtn = mkBtn(cX + nameW + 4, ly, 80, "Active: " + (active ? "ON" : "OFF"),
                 () -> { syncTextFields(); toggleActive(); });
         ly += ROW_STEP;
 
@@ -315,8 +321,26 @@ public class EditCameraScreen extends Screen {
             if (mc.player != null) {
                 syncTextFields();
                 attachTargetVal = mc.player.getUuid().toString();
-                if (attachUIMode == 0) attachUIMode = 1;
-                recomputeOffsetToKeepInPlace(attachUIMode);
+                if (attachUIMode == 0) {
+                    // Re-attaching after a detach. If the camera was previously
+                    // in Head (Orbit) mode, restore that mode directly — the
+                    // stored local-space orbit offset is already the correct
+                    // relative position (camera will resume near the player at
+                    // the same radius). Recomputing would use the camera's
+                    // current world position (old orbit spot, possibly far away
+                    // after the player moved) and produce a large offset that
+                    // keeps the camera at the old far location.
+                    if (origAttachTarget == null && origAttachMode == 1) {
+                        attachUIMode = 2;
+                        // offXVal/Y/Z are already loaded from cam.getAttachOffset()
+                        // in init() and hold the correct local-space orbit values.
+                    } else {
+                        attachUIMode = 1;
+                        recomputeOffsetToKeepInPlace(1);
+                    }
+                } else {
+                    recomputeOffsetToKeepInPlace(attachUIMode);
+                }
                 applyLive();
                 clearAndInit();
             }
@@ -398,6 +422,13 @@ public class EditCameraScreen extends Screen {
         addDrawableChild(cancelBtn);
         addDrawableChild(removeBtn);
 
+        // Top-left "back to camera list" button. Created after clampVisibility()
+        // (like the bottom row) so it isn't hidden for sitting above CONTENT_TOP.
+        // Edits are applied live, so back keeps changes and returns to the list.
+        backBtn = ButtonWidget.builder(Text.literal("< Camera List"), b -> backToCameraList())
+                .dimensions(6, 4, 96, ROW_H).build();
+        addDrawableChild(backBtn);
+
         suspendChangeListener = false;
     }
 
@@ -434,10 +465,12 @@ public class EditCameraScreen extends Screen {
         return f;
     }
 
-    private void mkBtn(int x, int ly, int w, String label, Runnable action) {
+    private ButtonWidget mkBtn(int x, int ly, int w, String label, Runnable action) {
         int sy = CONTENT_TOP + ly - scrollY;
-        addDrawableChild(ButtonWidget.builder(Text.literal(label), b -> action.run())
-                .dimensions(x, sy, w, ROW_H).build());
+        ButtonWidget btn = ButtonWidget.builder(Text.literal(label), b -> action.run())
+                .dimensions(x, sy, w, ROW_H).build();
+        addDrawableChild(btn);
+        return btn;
     }
 
     private void mkModeBtn(int x, int ly, int w, String label, boolean selected, Runnable action) {
@@ -480,6 +513,16 @@ public class EditCameraScreen extends Screen {
                     GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_DISABLED);
         }
         CameraRenderer.setPreviewBoost(inRotateMode || inDragMode);
+
+        // Keep the Active toggle's label in sync with the REAL bound-camera state
+        // every frame. In server mode toggleActive() only sends a packet; the bind
+        // state updates a round-trip later, so a label baked at init()/clearAndInit()
+        // time would show the pre-toggle value and read inverted. Refreshing here
+        // makes it always reflect the true state (and self-correct after the packet).
+        if (activeBtn != null) {
+            boolean nowActive = cameraUuid.equals(CameraRenderer.getBoundCameraUuid());
+            activeBtn.setMessage(Text.literal("Active: " + (nowActive ? "ON" : "OFF")));
+        }
 
         // Commit a text field's value when focus leaves it (clicking away).
         net.minecraft.client.gui.Element nowFocused = getFocused();
@@ -843,6 +886,19 @@ public class EditCameraScreen extends Screen {
         this.client.setScreen(parent);
     }
 
+    /** "Back to camera list": always lands on the Cameras list. When the edit
+     *  screen was opened by clicking a camera entity in the world, parent is null
+     *  (see ClientInteractionMixin) — open a fresh list instead of closing to the
+     *  game. Edits are applied live, so this keeps changes like Done. */
+    private void backToCameraList() {
+        syncTextFields();
+        applyLive();
+        CameraGuiScreen dest = parent != null
+                ? parent
+                : new CameraGuiScreen(CameraGuiScreen.Tab.CAMERAS);
+        this.client.setScreen(dest);
+    }
+
     private void cancelAndClose() {
         // Restore tracked.* (per-cam overrides + name) to originals
         tracked.name                = origName;
@@ -1064,7 +1120,16 @@ public class EditCameraScreen extends Screen {
         if (targetUuid == null) return;
         MinecraftClient mc = MinecraftClient.getInstance();
         Entity target = null;
-        if (mc.world != null) {
+        // The local player is often NOT returned by world.getEntities() on the
+        // client, so resolve it explicitly (same as the per-frame attach loop).
+        // Without this, attaching "to me" in Head mode would fall through with
+        // target == null and skip the world->local offset conversion below — the
+        // offset stays world-space and the per-frame orbit then rotates it by the
+        // player's yaw, so the camera jumps to a rotated position instead of
+        // staying where it is.
+        if (mc.player != null && mc.player.getUuid().equals(targetUuid)) {
+            target = mc.player;
+        } else if (mc.world != null) {
             for (Entity e : mc.world.getEntities()) {
                 if (e.getUuid().equals(targetUuid)) { target = e; break; }
             }

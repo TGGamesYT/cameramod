@@ -50,6 +50,23 @@ public class CameraRenderer {
     private static SimpleFramebuffer offscreenFbo;
     private static byte[] frameBytes;
 
+    // Consecutive camera-pass failures while VR (Vivecraft) is active. The VR
+    // camera render is best-effort (we can't test it here); if it keeps throwing
+    // we stop attempting it and feed the off image instead of spamming exceptions
+    // every frame. Reset to 0 whenever VR is off or a camera pass succeeds.
+    private static int vrCameraPassFailures = 0;
+    private static final int VR_CAMERA_PASS_MAX_FAILURES = 3;
+
+    // In VR the camera pass points renderWorld at the camera entity WITHOUT
+    // calling mc.setCameraEntity() — that runs GameRenderer.onCameraEntitySet,
+    // which Vivecraft hooks to re-origin its VR head tracking. Writing the field
+    // twice every frame made the headset view snap back the moment the player
+    // turned to the side. Instead we override getCameraEntity() for the duration
+    // of the pass (MinecraftClientCameraEntityMixin) and leave the real
+    // cameraEntity field on the player, so Vivecraft never sees a change.
+    private static volatile Entity cameraEntityOverride = null;
+    public static Entity getCameraEntityOverride() { return cameraEntityOverride; }
+
     // Saved Camera cameraY/lastCameraY for the camera entity pass —
     // prevents the player's sneak bob from leaking into the camera view.
     private static float savedCamCameraY = Float.NaN;
@@ -93,6 +110,27 @@ public class CameraRenderer {
 
     public static float getActiveZoomLevel() {
         return activeZoomLevel;
+    }
+
+    // Snap a camera entity's previous-tick pose to its current pose before the
+    // camera pass. Camera.update() (which runs inside renderWorld here) positions
+    // and orients the view by interpolating between the entity's previous-tick
+    // state (lastX/Y/Z, lastYaw/lastPitch) and its current state by the frame's
+    // tick progress — and the eye-height offset (cameraY) is added on TOP of that
+    // interpolated Y. The per-frame fixer/attach/mover position cameras with
+    // setPosition()/setYaw(), which don't touch those prev-tick fields, and
+    // client-only cameras aren't tick-synced — so lastX/Y/Z stay at the camera's
+    // stale spawn/placement value and the rendered eye position gets dragged off
+    // (most visibly in Y: the view sits below the camera's real eye height).
+    // Collapsing prev==current makes the lerp resolve to exactly where the camera
+    // is, so the viewpoint lands at the camera entity's true eye height. (This is
+    // the same fix 1.21.11 applies before its explicit updateCamera() call.)
+    private static void syncPrevPose(Entity e) {
+        e.lastX = e.getX();
+        e.lastY = e.getY();
+        e.lastZ = e.getZ();
+        e.lastYaw = e.getYaw();
+        e.lastPitch = e.getPitch();
     }
 
     // Saved player camera position from just before the camera pass — used by
@@ -577,6 +615,23 @@ public class CameraRenderer {
     public static Boolean getLocalGuiMode() { return cameraGuiModeLocal; }
     public static Boolean getLocalShowPlayerGuis() { return cameraShowPlayerGuisLocal; }
 
+    // Client-only toggle: when true, the 3D camera entity models are not drawn
+    // for this client (the cameras still function — stream, attachment, fixer —
+    // they're just visually hidden). Off by default. The entity renderer reads
+    // this in shouldRender(); the attachment/fixer logic runs in
+    // WorldRenderEvents.START independently, so hiding the model is purely cosmetic.
+    private static boolean hideCameraModels = false;
+    public static boolean isHideCameraModels() { return hideCameraModels; }
+    public static void setHideCameraModels(boolean v) { hideCameraModels = v; }
+
+    // Client-only toggle: when true, the floating name tags of camera entities are
+    // not drawn in THIS player's normal view (the camera's own name still works in
+    // the stream — that's governed by getCameraNameTags()). Off by default. Read by
+    // EntityRendererLabelMixin when NOT in the camera pass.
+    private static boolean hideCameraNameTagsForPlayers = false;
+    public static boolean isHideCameraNameTagsForPlayers() { return hideCameraNameTagsForPlayers; }
+    public static void setHideCameraNameTagsForPlayers(boolean v) { hideCameraNameTagsForPlayers = v; }
+
     public static void setLocalStreamFps(Integer val)  {
         streamFpsLocal = val == null ? null : Math.max(1, Math.min(240, val));
         if (streamFpsLocal != null) CameramodClient.syncGameRuleIntToServer(Cameramod.CAMERA_STREAM_FPS, streamFpsLocal);
@@ -686,6 +741,8 @@ public class CameraRenderer {
         if (!hasSoftCam && !CameraStreamServer.hasClients()) return;
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.getFramebuffer() == null) return;
+        // In VR a flat player-POV grab isn't possible (stereo); skip capture.
+        if (VivecraftCompat.isVrActive() || VivecraftCompat.isVivecraftTarget(mc.getFramebuffer())) return;
 
         boolean flipped = getGameruleBool(Cameramod.CAMERA_FLIPPED);
         captureFramebuffer(mc.getFramebuffer(), Cameramod.camwidth, Cameramod.camheight, flipped);
@@ -723,6 +780,19 @@ public class CameraRenderer {
         if (now - lastFrameSendNanos < intervalNanos) return;
         lastFrameSendNanos = now;
 
+        // Is VR on this session? Use the SESSION flag (isVrMode), not the per-eye
+        // VR_RUNNING flag: on the 1.21.9+ frame-graph pipeline our camera pass runs
+        // during the vanilla desktop GameRenderer.render where VR_RUNNING is false
+        // but Vivecraft's multi-pass target is still installed. Keying the mono
+        // levers + getCameraEntity override off VR_RUNNING there meant neither was
+        // applied — the camera renderWorld hit Vivecraft's MultiPassTextureTarget
+        // with no VANILLA lever and NPE-crashed. In VR we render the camera POV into
+        // our OWN offscreen FBO (mono levers drop Vivecraft to its vanilla path);
+        // the player-POV capture path can't grab a flat VR framebuffer and falls
+        // back to the off image. No-op without Vivecraft.
+        boolean vrActive = VivecraftCompat.isVrMode();
+        if (!vrActive) vrCameraPassFailures = 0; // forget failures once VR is off
+
         if (mc.world == null || mc.player == null) {
             if (hasStreamConsumers) {
                 // Out-of-game (title screen, server list, "Connecting…"): only
@@ -733,9 +803,10 @@ public class CameraRenderer {
                 // the live window view and crashes on not-yet-initialised cube
                 // maps. Off → feed the off-image so the stream shows "off".
                 // Uses the menu-only toggle so in-game streaming state can't leak
-                // here (see menuStreamingEnabled).
-                if (menuStreamingEnabled) capturePlayerPov = true;
-                else                      sendOffImage();
+                // here (see menuStreamingEnabled). In VR there's no flat window
+                // framebuffer to grab, so fall back to the off image.
+                if (menuStreamingEnabled && !vrActive) capturePlayerPov = true;
+                else                                    sendOffImage();
             }
             return;
         }
@@ -766,11 +837,23 @@ public class CameraRenderer {
         } else if (hasStreamConsumers) {
             // Streaming disabled or no bound camera → keep the consumers fed
             // with the off image / queue the player POV capture as before.
-            if (!streamingEnabled) sendOffImage();
-            else                   capturePlayerPov = true;
+            // The player-POV grab reads the window framebuffer, which in VR is
+            // Vivecraft's stereo target — not capturable — so use the off image.
+            if (!streamingEnabled || vrActive) sendOffImage();
+            else                               capturePlayerPov = true;
+        }
+
+        // VR camera render kept failing earlier this VR session — stop retrying
+        // (it was spamming exceptions and lagging) and just feed the off image
+        // until VR is turned off (the counter resets then).
+        if (wantMainPass && vrActive && vrCameraPassFailures >= VR_CAMERA_PASS_MAX_FAILURES) {
+            if (hasStreamConsumers) sendOffImage();
+            wantMainPass = false;
         }
 
         if (!wantMainPass) {
+            // renderEditPreviews is VR-safe now (mono levers + getCameraEntity
+            // override), so the edit-screen previews render in VR too.
             if (hasPreviewTarget) {
                 runPreviewOnly(mc, gameRenderer, tickCounter, now);
             }
@@ -823,9 +906,17 @@ public class CameraRenderer {
             // full second world render, hard-capping FPS to ~20 with Sodium.
             // Use the largest camera-aspect rectangle that fits within both the
             // camera resolution AND the main FBO (so we never render bigger than
-            // needed and never overflow the host window's framebuffer).
-            int maxW = Math.min(w, mainFbo.textureWidth);
-            int maxH = Math.min(h, mainFbo.textureHeight);
+            // needed and never overflow the host window's framebuffer). In VR the
+            // main FBO is Vivecraft's stereo target whose dimensions aren't a
+            // usable flat size, so cap against the desktop window instead.
+            int mainW = mainFbo.textureWidth;
+            int mainH = mainFbo.textureHeight;
+            if (vrActive || mainW <= 0 || mainH <= 0) {
+                mainW = mc.getWindow().getFramebufferWidth();
+                mainH = mc.getWindow().getFramebufferHeight();
+            }
+            int maxW = Math.min(w, mainW);
+            int maxH = Math.min(h, mainH);
             float camAspect = (float) w / (float) h;
             float maxAspect = (float) maxW / (float) Math.max(1, maxH);
             int fbW, fbH;
@@ -843,7 +934,14 @@ public class CameraRenderer {
 
             accessor.cameramod$setFramebuffer(offscreenFbo);
             mc.options.setPerspective(Perspective.FIRST_PERSON);
-            mc.setCameraEntity(camera);
+            // In VR, override the getter instead of writing the field (see
+            // cameraEntityOverride) so Vivecraft's onCameraEntitySet re-origin
+            // hook never fires. In flat play the plain field swap is fine.
+            if (vrActive) {
+                cameraEntityOverride = camera;
+            } else {
+                mc.setCameraEntity(camera);
+            }
 
             // Save the player's cameraY / lastCameraY and restore the camera's
             // saved values.  This prevents the player's sneak eye-height offset
@@ -940,9 +1038,22 @@ public class CameraRenderer {
             // clobber the camera's deferred cloud draw.
             swapInCameraCloudState(mc);
 
-            SodiumTranslucencyCompat.beforeCameraPass();
-            gameRenderer.renderWorld(tickCounter);
-            SodiumTranslucencyCompat.afterCameraPass();
+            // In VR, drop out of Vivecraft's stereo render for this one pass so
+            // renderWorld draws a flat mono view from the camera entity into our
+            // offscreen FBO (restored in the finally before the player's real VR
+            // render, which is injected after this pass). No-op without Vivecraft.
+            boolean vrMono = vrActive && VivecraftCompat.beginMonoRender();
+            try {
+                SodiumTranslucencyCompat.beforeCameraPass();
+                // Snap the camera's prev-tick pose to current so Camera.update()
+                // (inside renderWorld) resolves the viewpoint to the camera's exact
+                // position + eye height instead of a stale-lerp that sits too low.
+                syncPrevPose(camera);
+                gameRenderer.renderWorld(tickCounter);
+                SodiumTranslucencyCompat.afterCameraPass();
+            } finally {
+                if (vrMono) VivecraftCompat.endMonoRender();
+            }
 
             swapOutCameraCloudState(mc);
             swapOutCameraTerrain(mc);
@@ -1050,8 +1161,15 @@ public class CameraRenderer {
             }
             renderEditPreviews(mc, gameRenderer, tickCounter, now);
 
+            // Camera pass completed cleanly — if we're in VR, the best-effort
+            // render is working, so clear the failure count.
+            if (vrActive) vrCameraPassFailures = 0;
+
         } catch (Exception e) {
             Cameramod.LOGGER.error("CameraRenderer second pass failed", e);
+            // In VR, count failures so we stop retrying (and stop lagging) after
+            // a few and fall back to the off image until VR is turned off.
+            if (vrActive) vrCameraPassFailures++;
         } finally {
             // Re-enable EntityCulling and restore its debug counters before the
             // player pass runs (later in GameRenderer.render).
@@ -1064,7 +1182,12 @@ public class CameraRenderer {
             swapOutCameraTerrain(mc);
 
             accessor.cameramod$setFramebuffer(mainFbo);
-            mc.setCameraEntity(savedCameraEntity);
+            // Clear the VR getter override / restore the flat-play field swap.
+            if (vrActive) {
+                cameraEntityOverride = null;
+            } else {
+                mc.setCameraEntity(savedCameraEntity);
+            }
             mc.options.setPerspective(savedPerspective);
 
             // Reset pixel-pack state to GL defaults. MC's new render-device
@@ -1334,6 +1457,11 @@ public class CameraRenderer {
         EntityCullingCompat.beginCameraWork();
         SodiumEntityCullingCompat.beginCameraWork();
         viewCapturedFromMainPass = false;
+        // In VR renderEditPreviews drives the camera via the getCameraEntity
+        // override and never touches mc.cameraEntity, so we must NOT call
+        // setCameraEntity to "restore" it here — that would fire Vivecraft's
+        // onCameraEntitySet re-origin and snap the headset view every frame.
+        boolean vrMode = VivecraftCompat.isVrMode();
         Entity savedCameraEntity = mc.getCameraEntity();
         MinecraftClientAccessor accessor = (MinecraftClientAccessor) mc;
         net.minecraft.client.gl.Framebuffer mainFbo = accessor.cameramod$getFramebuffer();
@@ -1346,7 +1474,7 @@ public class CameraRenderer {
             EntityCullingCompat.endCameraWork();
             SodiumEntityCullingCompat.endCameraWork();
             accessor.cameramod$setFramebuffer(mainFbo);
-            mc.setCameraEntity(savedCameraEntity);
+            if (!vrMode) mc.setCameraEntity(savedCameraEntity);
             mc.options.setPerspective(savedPerspective);
             try {
                 GL11.glPixelStorei(GL11.GL_PACK_ROW_LENGTH, 0);
@@ -1380,7 +1508,18 @@ public class CameraRenderer {
 
         MinecraftClientAccessor accessor = (MinecraftClientAccessor) mc;
         accessor.cameramod$setFramebuffer(previewFbo);
-        mc.setCameraEntity(previewCam);
+
+        // In VR, point renderWorld at the preview camera via the getCameraEntity
+        // override (NOT mc.setCameraEntity, which fires Vivecraft's
+        // onCameraEntitySet head-tracking re-origin) and open a mono-render scope
+        // so the preview renderWorld calls drop Vivecraft to its vanilla path and
+        // can't hit the MultiPassTextureTarget without the VANILLA lever. This is
+        // the same mechanism the working in-world VR camera pass uses. Flat
+        // (non-VR) play keeps the plain field swap and no levers.
+        boolean vrMode = VivecraftCompat.isVrMode();
+        Entity savedOverride = cameraEntityOverride;
+        if (vrMode) cameraEntityOverride = previewCam;
+        else        mc.setCameraEntity(previewCam);
 
         UUID previewUuid = previewCameraUuid;
         // While we render this camera's previews, claim it as the "bound"
@@ -1389,6 +1528,7 @@ public class CameraRenderer {
         // The previewed camera might not be the one currently streamed.
         UUID savedBoundUuid = boundCameraUuid;
         boundCameraUuid = previewUuid;
+        boolean mono = vrMode && VivecraftCompat.beginMonoRender();
         try {
             if (!viewCapturedFromMainPass) {
                 // FIRST_PERSON — what the camera sees. Also fans this frame out to
@@ -1396,6 +1536,7 @@ public class CameraRenderer {
                 // for cameras that were never activated (no main stream pass has run
                 // for them, so without this their card stays blank).
                 mc.options.setPerspective(Perspective.FIRST_PERSON);
+                syncPrevPose(previewCam);
                 gameRenderer.renderWorld(tickCounter);
                 int fbW = previewFbo.textureWidth;
                 int fbH = previewFbo.textureHeight;
@@ -1422,14 +1563,18 @@ public class CameraRenderer {
             // no player-screen overlay, no flip; these aren't "what the camera
             // sees", they're previews of where the camera is in the world.
             mc.options.setPerspective(Perspective.THIRD_PERSON_FRONT);
+            syncPrevPose(previewCam);
             gameRenderer.renderWorld(tickCounter);
             capturePreviewFramebuffer(previewFbo, bytes -> previewFrameFront = bytes);
 
             mc.options.setPerspective(Perspective.THIRD_PERSON_BACK);
+            syncPrevPose(previewCam);
             gameRenderer.renderWorld(tickCounter);
             capturePreviewFramebuffer(previewFbo, bytes -> previewFrameBack = bytes);
         } finally {
+            if (mono) VivecraftCompat.endMonoRender();
             boundCameraUuid = savedBoundUuid;
+            if (vrMode) cameraEntityOverride = savedOverride;
         }
 
         // Bump version so the GUI re-uploads its textures. The async

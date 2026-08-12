@@ -75,12 +75,11 @@ public class CameraGuiScreen extends Screen {
     private static final int GRID_BOTTOM_PAD   = 8;
     private static final int MAX_CARDS_PER_ROW = 3;
 
-    // Right sidebar (fixed panel with action buttons) — thin column,
-    // about a small-button width plus a couple of pixels on each side.
-    private static final int SIDEBAR_W         = 22;
-    private static final int SIDEBAR_GAP       = 2;
-    private static final int SIDEBAR_BTN_SIZE  = 18;
-    private static final int SIDEBAR_BTN_PAD   = 3;
+    // Right sidebar — vertical strip, button size and width scale with screen height.
+    private static final int SIDEBAR_BTN_MIN  = 18;
+    private static final int SIDEBAR_BTN_MAX  = 30;
+    private static final int SIDEBAR_GAP_MIN  = 3;
+    private static final int SIDEBAR_SIDE_PAD = 2;
 
     // Per-card active-indicator button (drawn in the text area, right-aligned)
     private static final int CARD_BTN_SIZE     = 14;
@@ -109,6 +108,22 @@ public class CameraGuiScreen extends Screen {
             Identifier.of(Cameramod.MOD_ID, "textures/gui/attach_mode_world_disabled.png");
     private static final Identifier TEX_ATTACH_MODE_HEAD_OFF =
             Identifier.of(Cameramod.MOD_ID, "textures/gui/attach_mode_head_disabled.png");
+    // "Hide cameras" toggle: normal camera item when showing, semi-transparent
+    // dashed-outline camera when hidden.
+    private static final Identifier TEX_CAMERA_ITEM =
+            Identifier.of(Cameramod.MOD_ID, "textures/item/camera_item.png");
+    private static final Identifier TEX_HIDE_CAMERAS =
+            Identifier.of(Cameramod.MOD_ID, "textures/gui/hidden_camera.png");
+    // Camera fixer item texture: a tripod-camera on the left and a player figure
+    // on the right. The name-tag buttons sample only the player figure region.
+    private static final Identifier TEX_CAMERA_FIXER =
+            Identifier.of(Cameramod.MOD_ID, "textures/item/camera_fixer.png");
+    // Player-figure sub-region within the 64×64 camera_fixer.png (measured from the
+    // texture: opaque pixels span x 36..59, y 13..50).
+    private static final int FIGURE_U = 36, FIGURE_V = 13, FIGURE_W = 24, FIGURE_H = 38;
+
+    // Total number of sidebar buttons (vertical strip on the right).
+    private static final int SIDEBAR_BTN_COUNT = 7;
 
     // ─── Cameras-tab state ───────────────────────────────────────────────────
 
@@ -349,7 +364,7 @@ public class CameraGuiScreen extends Screen {
     // ── Grid geometry ────────────────────────────────────────────────────────
 
     private int gridAvailableWidth() {
-        return this.width - 2 * SIDE_MARGIN - SIDEBAR_W - SIDEBAR_GAP;
+        return this.width - 2 * SIDE_MARGIN - sidebarW() - SIDEBAR_SIDE_PAD;
     }
 
     private int cardsPerRow() {
@@ -386,15 +401,28 @@ public class CameraGuiScreen extends Screen {
         return rows * currentCardH() + (rows - 1) * CARD_GAP;
     }
 
-    // ── Sidebar geometry ─────────────────────────────────────────────────────
+    // ── Sidebar geometry (vertical strip on the right) ───────────────────────
 
-    private int sidebarX()              { return this.width - SIDEBAR_W; }
-    private int sidebarBtnX()           { return sidebarX() + (SIDEBAR_W - SIDEBAR_BTN_SIZE) / 2; }
-    private int sidebarBtnY(int index)  { return GRID_TOP + SIDEBAR_BTN_PAD + index * (SIDEBAR_BTN_SIZE + SIDEBAR_BTN_PAD); }
+    private int sidebarBtnSize() {
+        // Scale with available screen height; cap so buttons aren't huge.
+        int viewH = this.height - GRID_TOP - GRID_BOTTOM_PAD;
+        return Math.max(SIDEBAR_BTN_MIN, Math.min(SIDEBAR_BTN_MAX, viewH / 14));
+    }
+    private int sidebarW()    { return sidebarBtnSize() + 2 * SIDEBAR_SIDE_PAD; }
+    private int sidebarX()    { return this.width - sidebarW(); }
+    private int sidebarBtnX() { return sidebarX() + SIDEBAR_SIDE_PAD; }
+    private int sidebarBtnY(int index) {
+        // SIDEBAR_BTN_COUNT buttons equally spaced top-to-bottom in the sidebar.
+        int sz   = sidebarBtnSize();
+        int viewH = this.height - GRID_TOP - GRID_BOTTOM_PAD;
+        int gap  = Math.max(SIDEBAR_GAP_MIN, (viewH - SIDEBAR_BTN_COUNT * sz) / (SIDEBAR_BTN_COUNT + 1));
+        return GRID_TOP + gap + index * (sz + gap);
+    }
+    private int gridBottomEdge() { return this.height - GRID_BOTTOM_PAD; }
 
     private boolean isOnSidebarBtn(int index, double mx, double my) {
-        int bx = sidebarBtnX(), by = sidebarBtnY(index);
-        return mx >= bx && mx < bx + SIDEBAR_BTN_SIZE && my >= by && my < by + SIDEBAR_BTN_SIZE;
+        int bx = sidebarBtnX(), by = sidebarBtnY(index), sz = sidebarBtnSize();
+        return mx >= bx && mx < bx + sz && my >= by && my < by + sz;
     }
 
     // ── Per-card active button ───────────────────────────────────────────────
@@ -472,9 +500,28 @@ public class CameraGuiScreen extends Screen {
                 CameramodClient.toggleAttachLastToPlayer();
                 return true;
             }
+            if (isOnSidebarBtn(4, mouseX, mouseY)) {
+                CameraRenderer.setHideCameraModels(!CameraRenderer.isHideCameraModels());
+                CameramodClient.saveClientConfig();
+                return true;
+            }
+            // Button 5: hide camera entity name tags in THIS player's view.
+            if (isOnSidebarBtn(5, mouseX, mouseY)) {
+                CameraRenderer.setHideCameraNameTagsForPlayers(
+                        !CameraRenderer.isHideCameraNameTagsForPlayers());
+                CameramodClient.saveClientConfig();
+                return true;
+            }
+            // Button 6: hide entity/player name tags inside the camera stream
+            // (toggles the global "show name tags in camera" override).
+            if (isOnSidebarBtn(6, mouseX, mouseY)) {
+                CameraRenderer.setLocalNameTags(!CameraRenderer.getCameraNameTags());
+                CameramodClient.saveClientConfig();
+                return true;
+            }
 
             // Card interactions (only within the visible viewport)
-            if (mouseY >= GRID_TOP && mouseY < this.height - GRID_BOTTOM_PAD) {
+            if (mouseY >= GRID_TOP && mouseY < gridBottomEdge()) {
                 int cw = currentCardW(), ch = currentCardH();
                 for (int i = 0; i < cameraCards.size(); i++) {
                     int cx = cardX(i), cy = cardY(i);
@@ -495,7 +542,7 @@ public class CameraGuiScreen extends Screen {
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontal, double vertical) {
         if (currentTab == Tab.CAMERAS) {
-            int viewportH = this.height - GRID_TOP - GRID_BOTTOM_PAD;
+            int viewportH = gridBottomEdge() - GRID_TOP;
             int max = Math.max(0, totalGridHeight() - viewportH);
             if (max > 0) {
                 scrollY -= (int) (vertical * 24);
@@ -589,7 +636,7 @@ public class CameraGuiScreen extends Screen {
         }
 
         // Camera name (left-aligned with padding, right-padded for button)
-        String name = card.name() == null ? "Camera" : card.name();
+        String name = (card.name() == null || card.name().isEmpty()) ? "Camera" : card.name();
         int nameMaxW = cw - CARD_BTN_SIZE - 8;
         ctx.drawTextWithShadow(textRenderer,
                 textRenderer.trimToWidth(name, nameMaxW),
@@ -615,7 +662,7 @@ public class CameraGuiScreen extends Screen {
 
     private void drawSidebar(DrawContext ctx, int mouseX, int mouseY) {
         int sx = sidebarX();
-        // Sidebar background
+        // Sidebar background: separator line on left, then the strip
         ctx.fill(sx - 1, GRID_TOP, sx, this.height - GRID_BOTTOM_PAD, 0xFF606060);
         ctx.fill(sx, GRID_TOP, this.width, this.height - GRID_BOTTOM_PAD, 0xFF1E1E1E);
 
@@ -646,6 +693,125 @@ public class CameraGuiScreen extends Screen {
         drawSidebarBtnTex(ctx, mouseX, mouseY, 3,
                 attached ? TEX_ATTACHER : TEX_ATTACHER_OFF,
                 attached ? 0xFF334422 : 0xFF2A2A2A);
+
+        // Button 4: hide/show camera 3D models for this client. When hidden,
+        // show the dashed semi-transparent camera; when showing, the normal one.
+        boolean hidden = CameraRenderer.isHideCameraModels();
+        drawSidebarBtnTex(ctx, mouseX, mouseY, 4,
+                hidden ? TEX_HIDE_CAMERAS : TEX_CAMERA_ITEM,
+                hidden ? 0xFF332244 : 0xFF2A2A2A);
+
+        // Button 5: hide camera name tags for players (the camera-list player's
+        // own view). Icon: the camera item; when name tags ARE shown it's drawn
+        // squeezed with a little morse-code "tg" name tag above it, when hidden
+        // it's the plain camera item.
+        boolean camTagsHidden = CameraRenderer.isHideCameraNameTagsForPlayers();
+        drawSidebarNameTagBtn(ctx, mouseX, mouseY, 5,
+                TEX_CAMERA_ITEM, 0, 0, 64, 64,
+                !camTagsHidden,
+                camTagsHidden ? 0xFF332244 : 0xFF2A2A2A);
+
+        // Button 6: hide player/entity name tags inside the camera stream. Same
+        // icon design but the player figure (from the camera fixer texture)
+        // instead of the camera item.
+        boolean camViewTagsShown = CameraRenderer.getCameraNameTags();
+        drawSidebarNameTagBtn(ctx, mouseX, mouseY, 6,
+                TEX_CAMERA_FIXER, FIGURE_U, FIGURE_V, FIGURE_W, FIGURE_H,
+                camViewTagsShown,
+                camViewTagsShown ? 0xFF2A2A2A : 0xFF332244);
+    }
+
+    /**
+     * Draws a sidebar button whose icon is a figure (sampled from {@code tex} at
+     * {@code u,v,rw,rh} of a 64×64 texture) that optionally wears a tiny name tag.
+     * The figure ALWAYS aspect-fits the full inner button area (centered, never
+     * stretched). When {@code withTag} a thin dark name-tag bar with morse code
+     * "tg" is overlaid across the top of the icon (like a vanilla floating name),
+     * without shrinking the figure.
+     */
+    private void drawSidebarNameTagBtn(DrawContext ctx, int mouseX, int mouseY, int index,
+                                       Identifier tex, int u, int v, int rw, int rh,
+                                       boolean withTag, int bgColor) {
+        int bx = sidebarBtnX();
+        int by = sidebarBtnY(index);
+        int sz = sidebarBtnSize();
+        drawSidebarBtnBg(ctx, mouseX, mouseY, index, bx, by, bgColor);
+
+        int innerX = bx + 1;
+        int innerY = by + 1;
+        int innerW = sz - 2;
+        int innerH = sz - 2;
+
+        // Aspect-fit the figure into the full inner area, centered on both axes.
+        int[] fit = fitRegion(rw, rh, innerW, innerH);
+        int figX = innerX + fit[0];
+        int figY = innerY + fit[1];
+        ctx.drawTexture(RenderPipelines.GUI_TEXTURED, tex,
+                figX, figY, (float) u, (float) v, fit[2], fit[3], rw, rh, 64, 64);
+
+        if (!withTag) return;
+
+        // Name-tag bar overlaid across the top of the icon. Sized/positioned
+        // from the button's inner area (NOT the figure's drawn width) so it
+        // looks identical on every name-tag button regardless of whether the
+        // icon is a square camera item or a narrow pillarboxed player figure.
+        int tagH = Math.max(3, innerH / 4);
+        int tagX0 = innerX;
+        int tagX1 = innerX + innerW;
+        int tagY0 = innerY;
+        int tagY1 = innerY + tagH;
+        ctx.fill(tagX0, tagY0, tagX1, tagY1, 0xCC000000);
+        drawMorseTg(ctx, tagX0 + 1, tagY0 + 1, tagX1 - 1, tagY1 - 1, 0xFFFFFFFF);
+    }
+
+    /**
+     * Returns [offsetX, offsetY, drawW, drawH] to center a {@code srcW × srcH}
+     * region within a {@code dstW × dstH} area while preserving the source
+     * aspect ratio (letter/pillarbox, never stretch).
+     */
+    private static int[] fitRegion(int srcW, int srcH, int dstW, int dstH) {
+        if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0)
+            return new int[]{0, 0, Math.max(1, dstW), Math.max(1, dstH)};
+        int fitW, fitH;
+        if ((long) srcW * dstH > (long) srcH * dstW) {
+            fitW = dstW;
+            fitH = Math.max(1, srcH * dstW / srcW);
+        } else {
+            fitH = dstH;
+            fitW = Math.max(1, srcW * dstH / srcH);
+        }
+        return new int[]{(dstW - fitW) / 2, (dstH - fitH) / 2, fitW, fitH};
+    }
+
+    /**
+     * Draws the morse code for "tg" — T = "−", G = "−−·" — as white marks across
+     * the given rectangle: dash, [letter gap], dash, dash, dot. Dashes are 3 units
+     * and the dot 1 unit, but at sidebar-button scale the dashes are clamped to a
+     * minimum 2px so they never round down to look like dots (which made the whole
+     * thing read as ". .-" before).
+     */
+    private void drawMorseTg(DrawContext ctx, int x0, int y0, int x1, int y1, int color) {
+        int w = x1 - x0;
+        if (w <= 0 || y1 <= y0) return;
+        // Marks in order: T(−), then G(− − ·). dash=true, dot=false.
+        final boolean[] dash      = {true, true, true, false};
+        // Gap (in units) BEFORE each mark: 0 first, 2 = letter gap, 1 = intra-letter.
+        final int[]     gapBefore = {0,    2,    1,    1};
+        int totalUnits = 0;
+        for (int i = 0; i < dash.length; i++) totalUnits += gapBefore[i] + (dash[i] ? 3 : 1);
+        double uw = (double) w / totalUnits;
+        double cx = x0;
+        for (int i = 0; i < dash.length; i++) {
+            cx += gapBefore[i] * uw;
+            int units = dash[i] ? 3 : 1;
+            int xa = (int) Math.round(cx);
+            int xb = (int) Math.round(cx + units * uw);
+            int minW = dash[i] ? 2 : 1;          // dashes stay visibly long
+            if (xb - xa < minW) xb = xa + minW;
+            if (xb > x1) xb = x1;
+            ctx.fill(xa, y0, xb, y1, color);
+            cx += units * uw;
+        }
     }
 
     /** Mode of the lastAttached camera if found, else 0 (World). */
@@ -661,28 +827,29 @@ public class CameraGuiScreen extends Screen {
                                    Identifier tex, int bgColor) {
         int bx = sidebarBtnX();
         int by = sidebarBtnY(index);
+        int sz = sidebarBtnSize();
         drawSidebarBtnBg(ctx, mouseX, mouseY, index, bx, by, bgColor);
         ctx.drawTexture(RenderPipelines.GUI_TEXTURED, tex,
                 bx + 1, by + 1, 0f, 0f,
-                SIDEBAR_BTN_SIZE - 2, SIDEBAR_BTN_SIZE - 2,
+                sz - 2, sz - 2,
                 64, 64, 64, 64);
     }
 
     private void drawSidebarBtnBg(DrawContext ctx, int mouseX, int mouseY, int index,
                                   int bx, int by, int bgColor) {
         boolean hover = isOnSidebarBtn(index, mouseX, mouseY);
-        ctx.fill(bx - 1, by - 1, bx + SIDEBAR_BTN_SIZE + 1, by + SIDEBAR_BTN_SIZE + 1,
+        int sz = sidebarBtnSize();
+        ctx.fill(bx - 1, by - 1, bx + sz + 1, by + sz + 1,
                 hover ? 0xFF808080 : 0xFF505050);
-        ctx.fill(bx, by, bx + SIDEBAR_BTN_SIZE, by + SIDEBAR_BTN_SIZE, bgColor);
+        ctx.fill(bx, by, bx + sz, by + sz, bgColor);
     }
 
     private void drawSidebarTooltips(DrawContext ctx, int mouseX, int mouseY) {
         long now = System.currentTimeMillis();
         int hoveredIndex = -1;
-        if      (isOnSidebarBtn(0, mouseX, mouseY)) hoveredIndex = 0;
-        else if (isOnSidebarBtn(1, mouseX, mouseY)) hoveredIndex = 1;
-        else if (isOnSidebarBtn(2, mouseX, mouseY)) hoveredIndex = 2;
-        else if (isOnSidebarBtn(3, mouseX, mouseY)) hoveredIndex = 3;
+        for (int i = 0; i < SIDEBAR_BTN_COUNT; i++) {
+            if (isOnSidebarBtn(i, mouseX, mouseY)) { hoveredIndex = i; break; }
+        }
 
         if (hoveredIndex < 0) {
             tooltipHoverId = null;
@@ -713,13 +880,23 @@ public class CameraGuiScreen extends Screen {
                         : (CameramodClient.lastAttachedToPlayerCameraUuid != null
                                 ? "Re-attach last camera to you"
                                 : "No camera to attach");
+            case 4  -> tip = CameraRenderer.isHideCameraModels()
+                        ? "Camera models hidden — click to show"
+                        : "Hide camera models";
+            case 5  -> tip = CameraRenderer.isHideCameraNameTagsForPlayers()
+                        ? "Camera name tags hidden from you — click to show"
+                        : "Hide camera name tags from you";
+            case 6  -> tip = CameraRenderer.getCameraNameTags()
+                        ? "Name tags shown in camera — click to hide"
+                        : "Name tags hidden in camera — click to show";
             default -> { return; }
         }
 
         int tw = textRenderer.getWidth(tip) + 8;
         int th = 14;
+        // Tooltip to the left of the button, vertically centered on it
         int tx = sidebarX() - tw - 4;
-        int ty = sidebarBtnY(hoveredIndex) + (SIDEBAR_BTN_SIZE - th) / 2;
+        int ty = sidebarBtnY(hoveredIndex) + (sidebarBtnSize() - th) / 2;
         ctx.fill(tx - 1, ty - 1, tx + tw + 1, ty + th + 1, 0xFF606060);
         ctx.fill(tx, ty, tx + tw, ty + th, 0xFF101010);
         ctx.drawTextWithShadow(textRenderer, tip, tx + 4, ty + 3, 0xFFFFFFFF);
@@ -742,16 +919,16 @@ public class CameraGuiScreen extends Screen {
         if (cameraCards.isEmpty()) {
             ctx.drawCenteredTextWithShadow(textRenderer,
                     "No cameras tracked yet — bind a camera to see it here",
-                    this.width / 2, this.height / 2, 0xFFAAAAAA);
+                    (this.width - sidebarW()) / 2, this.height / 2, 0xFFAAAAAA);
             drawSidebar(ctx, mouseX, mouseY);
             return;
         }
 
         int ch = currentCardH();
-        ctx.enableScissor(0, GRID_TOP, sidebarX() - SIDEBAR_GAP, this.height - GRID_BOTTOM_PAD);
+        ctx.enableScissor(0, GRID_TOP, sidebarX() - SIDEBAR_SIDE_PAD, gridBottomEdge());
         for (int i = 0; i < cameraCards.size(); i++) {
             int cx = cardX(i), cy = cardY(i);
-            if (cy + ch < GRID_TOP || cy > this.height - GRID_BOTTOM_PAD) continue;
+            if (cy + ch < GRID_TOP || cy > gridBottomEdge()) continue;
             drawCard(ctx, cameraCards.get(i), cx, cy, mouseX, mouseY);
         }
         ctx.disableScissor();

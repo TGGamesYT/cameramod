@@ -2,11 +2,16 @@
   "schemaVersion": 1,
   "id": "cameramod",
   "version": "${version}",
-  "name": "cameramod",
+  "name": "Virtual Camera",
   "description": "A Camera entity's POV right into a virtual webcam",
   "authors": ["TGdoesCode"],
-  "contact": {},
-  "license": "MIT",
+  "contact": {
+    "homepage": "https://modrinth.com/mod/virtualcamera",
+    "sources": "https://github.com/tggamesyt/cameramod",
+    "issues": "https://tggamesyt.dev/discord?flashz",
+    "discord": "https://tggamesyt.dev/discord?flashz"
+  },
+  "license": "GNU GENERAL PUBLIC LICENSE",
   "--accessWidener": "cameramod.accesswidener",
   "icon": "assets/cameramod/textures/item/camera_item.png",
   "environment": "*",
@@ -32,17 +37,5 @@
     "fabricloader": ">=${loader_version}",
     "fabric": "*",
     "minecraft": "${minecraft_version}"
-  },
-  "modmenu": {
-    "links": {
-      "modmenu.discord": "https://discord.gg/8v6NvACFX5"
-    },
-    "parent": {
-      "id": "cameramod",
-      "name": "Cameramod",
-      "description": "A Camera entity's POV right into a virtual webcam",
-      "icon": "assets/cameramod/textures/item/camera_item.png"
-    },
-    "update_checker": true
   }
 }

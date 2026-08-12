@@ -258,6 +258,52 @@ public class CameraEntity extends LivingEntity {
     // a client-only camera that was evicted from the world entity list.
     public void resetRemoval() { this.unsetRemoved(); }
 
+    // ─── Mis-delivered server packet defense ────────────────────────────────
+    // A client-only camera has no server counterpart, so ANY tracked-position/
+    // rotation/velocity update landing on it is a mis-delivery: a server-side
+    // packet entity (plugin hologram, NPC nametag, cosmetic...) was allocated
+    // the same numeric entity ID — many plugins use their own negative-ID
+    // counters, the same ID space client-only cameras live in. Letting those
+    // packets through feeds the interpolator/head-tracking foreign coordinates,
+    // which drags the camera's position/rotation around every tick and makes
+    // an attached camera's look-at angle thrash ("rotation all over the place"
+    // in the stream). Drop them outright.
+
+    // updateTrackedPositionAndAngles() is final, but it routes through the
+    // virtual getInterpolator() — give packet code an inert interpolator that
+    // swallows refreshes, so mis-delivered teleports can't move the camera.
+    private net.minecraft.entity.PositionInterpolator inertInterpolator;
+
+    @Override
+    public net.minecraft.entity.PositionInterpolator getInterpolator() {
+        if (!this.clientOnly) return super.getInterpolator();
+        if (this.inertInterpolator == null) {
+            this.inertInterpolator = new net.minecraft.entity.PositionInterpolator(this) {
+                @Override public void refreshPositionAndAngles(Vec3d pos, float yaw, float pitch) {}
+                @Override public void tick() {}
+            };
+        }
+        return this.inertInterpolator;
+    }
+
+    @Override
+    public void updateTrackedPosition(double x, double y, double z) {
+        if (this.clientOnly) return;
+        super.updateTrackedPosition(x, y, z);
+    }
+
+    @Override
+    public void updateTrackedHeadRotation(float yaw, int interpolationSteps) {
+        if (this.clientOnly) return;
+        super.updateTrackedHeadRotation(yaw, interpolationSteps);
+    }
+
+    @Override
+    public void setVelocityClient(double x, double y, double z) {
+        if (this.clientOnly) return;
+        super.setVelocityClient(x, y, z);
+    }
+
     @Override
     public boolean canMoveVoluntarily() {
         // For client-only entities, the client is the authoritative side, so it must

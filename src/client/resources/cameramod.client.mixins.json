@@ -19,7 +19,10 @@
     "GameRendererMixin",
     "LightmapTextureManagerAccessor",
     "MinecraftClientAccessor",
+    "MinecraftClientCameraEntityMixin",
+    "MinecraftClientRenderMixin",
     "MouseMixin",
+    "PlayerEntityRendererVrMixin",
     "PlayerInventoryMixin",
     "WorldRendererAccessor",
     "WorldRendererMixin"

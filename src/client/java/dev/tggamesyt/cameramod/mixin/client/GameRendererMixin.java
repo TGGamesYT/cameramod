@@ -2,6 +2,7 @@ package dev.tggamesyt.cameramod.mixin.client;
 
 import dev.tggamesyt.cameramod.Cameramod;
 import dev.tggamesyt.cameramod.client.CameraRenderer;
+import dev.tggamesyt.cameramod.client.VivecraftCompat;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.render.Camera;
 import net.minecraft.client.render.GameRenderer;
@@ -20,8 +21,15 @@ public class GameRendererMixin {
     // Render camera pass BEFORE the player render so the player's renderWorld()
     // overwrites all state (frustum, fog, lightmap, chunks, etc.), preventing
     // entity jitter and sky/cloud glitches in the player's view.
+    //
+    // In VR this is the WRONG place: Vivecraft drives GameRenderer.render once per
+    // eye, so our second renderWorld would run inside an in-progress eye and
+    // corrupt the shared Camera/projection/framebuffer it depends on. There the
+    // camera pass instead runs once per frame from MinecraftClientRenderMixin,
+    // after Vivecraft's whole eye loop. (isVrActive() is a no-op without Vivecraft.)
     @Inject(method = "render", at = @At("HEAD"))
     private void cameramod$beforeRender(RenderTickCounter tickCounter, boolean tick, CallbackInfo ci) {
+        if (VivecraftCompat.isVrActive()) return;
         CameraRenderer.onFrameRendered((GameRenderer) (Object) this, tickCounter);
     }
 

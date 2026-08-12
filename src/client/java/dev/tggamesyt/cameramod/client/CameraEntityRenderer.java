@@ -26,6 +26,14 @@ public class CameraEntityRenderer extends LivingEntityRenderer<CameraEntity, Cam
         // Show legs when gravity is enabled AND camera is on a surface.
         // Hide legs when gravity is disabled or floating in air.
         state.showLegs = entity.isGravityEnabled() && entity.hasBlockBelow();
+        // "Hide camera name tags for players" sidebar toggle: drop the camera's
+        // own floating name in THIS player's normal view (not in the camera pass,
+        // where camera-view name tags are governed by getCameraNameTags()).
+        // renderLabelIfPresent only draws when displayName != null, so clearing it
+        // here suppresses the label portably across versions.
+        if (!CameraRenderer.isRendering() && CameraRenderer.isHideCameraNameTagsForPlayers()) {
+            state.displayName = null;
+        }
     }
 
     @Override
@@ -48,5 +56,18 @@ public class CameraEntityRenderer extends LivingEntityRenderer<CameraEntity, Cam
     @Override
     protected boolean canBeCulled(CameraEntity entity) {
         return false;
+    }
+
+    /**
+     * Client-side "hide cameras" toggle (sidebar in the camera list). When on,
+     * skip drawing the camera model entirely. This is purely visual — the
+     * camera's fixer/attachment/streaming logic runs in WorldRenderEvents.START,
+     * not here, so a hidden camera keeps working.
+     */
+    @Override
+    public boolean shouldRender(CameraEntity entity, net.minecraft.client.render.Frustum frustum,
+                                double x, double y, double z) {
+        if (CameraRenderer.isHideCameraModels()) return false;
+        return super.shouldRender(entity, frustum, x, y, z);
     }
 }
