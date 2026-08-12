@@ -205,7 +205,7 @@ public class ServerItems {
         dist = Math.max(1.0, dist + delta * 0.5);
         CAMERA_MOVER_DISTANCE.put(userId, dist);
         UUID camUuid = CAMERA_MOVER_UUIDS.get(userId);
-        if (camUuid != null && player.getWorld() instanceof ServerWorld sw) {
+        if (camUuid != null && player.getEntityWorld() instanceof ServerWorld sw) {
             Entity e = sw.getEntity(camUuid);
             if (e instanceof CameraEntity ce) ce.setMoverDistance(dist.floatValue());
         }
@@ -225,7 +225,7 @@ public class ServerItems {
         UUID userId = player.getUuid();
         UUID camUuid = CAMERA_ZOOMER_UUIDS.get(userId);
         if (camUuid == null) return;
-        ServerWorld world = (ServerWorld) player.getWorld();
+        ServerWorld world = (ServerWorld) player.getEntityWorld();
         Entity entity = world.getEntity(camUuid);
         if (!(entity instanceof CameraEntity cam)) return;
 
@@ -298,7 +298,7 @@ public class ServerItems {
         @Override
         public ActionResult useOnBlock(ItemUsageContext context) {
             World world = context.getWorld();
-            if (world.isClient) return ActionResult.SUCCESS;
+            if (world.isClient()) return ActionResult.SUCCESS;
 
             ItemStack itemStack = context.getStack();
             BlockPos blockPos = context.getBlockPos();
@@ -344,7 +344,7 @@ public class ServerItems {
 
             itemStack.decrementUnlessCreative(1, user);
             user.incrementStat(Stats.USED.getOrCreateStat(this));
-            world.emitGameEvent(user, GameEvent.ENTITY_PLACE, entity.getPos());
+            world.emitGameEvent(user, GameEvent.ENTITY_PLACE, entity.getEntityPos());
             user.sendMessage(Text.literal("Camera placed"), true);
             return ActionResult.SUCCESS;
         }
@@ -363,7 +363,7 @@ public class ServerItems {
 
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
-            if (user.getWorld().isClient) return ActionResult.SUCCESS;
+            if (user.getEntityWorld().isClient()) return ActionResult.SUCCESS;
             if (entity instanceof CameraEntity) {
                 return toggleBind(user, entity);
             }
@@ -373,7 +373,7 @@ public class ServerItems {
 
         @Override
         public ActionResult use(World world, PlayerEntity user, Hand hand) {
-            if (world.isClient) return ActionResult.SUCCESS;
+            if (world.isClient()) return ActionResult.SUCCESS;
 
             // Creative: 20-block raycast for distant cameras
             if (isCreative(user)) {
@@ -391,7 +391,7 @@ public class ServerItems {
                 if (activeCamera != null) {
                     CAMERA_COMMAND_STORAGE.remove(userId);
                     if (user instanceof ServerPlayerEntity sp) {
-                        clearForcedChunks((ServerWorld) user.getWorld(), activeCamera);
+                        clearForcedChunks((ServerWorld) user.getEntityWorld(), activeCamera);
                         ServerPlayNetworking.send(sp, new CameraServerThing.UnbindCameraS2CPayload());
                         sp.setAttached(SAVED_CAMERA_ATTACHMENT, activeCamera.toString());
                     }
@@ -439,7 +439,7 @@ public class ServerItems {
                 CAMERA_COMMAND_STORAGE.remove(userId);
                 STREAMING_ENABLED.put(userId, false);
                 if (user instanceof ServerPlayerEntity sp) {
-                    clearForcedChunks((ServerWorld) user.getWorld(), entity.getUuid());
+                    clearForcedChunks((ServerWorld) user.getEntityWorld(), entity.getUuid());
                     ServerPlayNetworking.send(sp, new CameraServerThing.CameraItemStateS2CPayload((byte) 2, false));
                     ServerPlayNetworking.send(sp, new CameraServerThing.UnbindCameraS2CPayload());
                     sp.removeAttached(SAVED_CAMERA_ATTACHMENT);
@@ -474,7 +474,7 @@ public class ServerItems {
 
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
-            if (user.getWorld().isClient) return ActionResult.SUCCESS;
+            if (user.getEntityWorld().isClient()) return ActionResult.SUCCESS;
             if (entity instanceof CameraEntity cam) {
                 orientCamera(cam, user);
                 return ActionResult.SUCCESS;
@@ -484,7 +484,7 @@ public class ServerItems {
 
         @Override
         public ActionResult use(World world, PlayerEntity player, Hand hand) {
-            if (world.isClient || player == null) return ActionResult.SUCCESS;
+            if (world.isClient() || player == null) return ActionResult.SUCCESS;
 
             // Creative: 20-block raycast for distant cameras
             if (isCreative(player)) {
@@ -533,7 +533,7 @@ public class ServerItems {
 
         @Override
         public ActionResult use(World world, PlayerEntity user, Hand hand) {
-            if (world.isClient) return ActionResult.SUCCESS;
+            if (world.isClient()) return ActionResult.SUCCESS;
 
             UUID userId = user.getUuid();
 
@@ -554,7 +554,7 @@ public class ServerItems {
 
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
-            if (user.getWorld().isClient) return ActionResult.SUCCESS;
+            if (user.getEntityWorld().isClient()) return ActionResult.SUCCESS;
             if (!(entity instanceof CameraEntity cam)) return ActionResult.PASS;
 
             if (!Boolean.TRUE.equals(CAMERA_MOVER_ACTIVENESS.get(user.getUuid()))) {
@@ -567,7 +567,7 @@ public class ServerItems {
 
         private void startMover(PlayerEntity user, CameraEntity cam) {
             UUID userId = user.getUuid();
-            double dist = cam.getPos().distanceTo(user.getPos());
+            double dist = cam.getEntityPos().distanceTo(user.getEntityPos());
             CAMERA_MOVER_DISTANCE.put(userId, dist);
             CAMERA_MOVER_UUIDS.put(userId, cam.getUuid());
             CAMERA_MOVER_ACTIVENESS.put(userId, true);
@@ -583,7 +583,7 @@ public class ServerItems {
         private void stopMover(PlayerEntity user) {
             UUID userId = user.getUuid();
             UUID camUuid = CAMERA_MOVER_UUIDS.get(userId);
-            if (camUuid != null && user.getWorld() instanceof ServerWorld sw) {
+            if (camUuid != null && user.getEntityWorld() instanceof ServerWorld sw) {
                 Entity e = sw.getEntity(camUuid);
                 if (e instanceof CameraEntity ce) {
                     ce.setBeingMoved(false);
@@ -614,7 +614,7 @@ public class ServerItems {
 
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
-            if (user.getWorld().isClient) return ActionResult.SUCCESS;
+            if (user.getEntityWorld().isClient()) return ActionResult.SUCCESS;
 
             UUID userId = user.getUuid();
 
@@ -636,7 +636,7 @@ public class ServerItems {
 
             UUID selectedCamUuid = CAMERA_FIXER_SELECTION.get(userId);
             if (selectedCamUuid != null) {
-                ServerWorld world = (ServerWorld) user.getWorld();
+                ServerWorld world = (ServerWorld) user.getEntityWorld();
                 Entity camEntity = world.getEntity(selectedCamUuid);
                 if (camEntity instanceof CameraEntity cam) {
                     cam.setFixedTargetUuid(entity.getUuid());
@@ -654,7 +654,7 @@ public class ServerItems {
 
         @Override
         public ActionResult use(World world, PlayerEntity user, Hand hand) {
-            if (world.isClient) return ActionResult.SUCCESS;
+            if (world.isClient()) return ActionResult.SUCCESS;
 
             UUID userId = user.getUuid();
 
@@ -730,7 +730,7 @@ public class ServerItems {
 
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
-            if (user.getWorld().isClient) return ActionResult.SUCCESS;
+            if (user.getEntityWorld().isClient()) return ActionResult.SUCCESS;
             if (!(entity instanceof CameraEntity cam)) return ActionResult.PASS;
             if (!user.isSneaking()) return ActionResult.PASS;
             return setZoomTarget(user, cam);
@@ -738,7 +738,7 @@ public class ServerItems {
 
         @Override
         public ActionResult use(World world, PlayerEntity user, Hand hand) {
-            if (world.isClient) return ActionResult.SUCCESS;
+            if (world.isClient()) return ActionResult.SUCCESS;
 
             UUID userId = user.getUuid();
 
@@ -785,7 +785,7 @@ public class ServerItems {
 
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
-            if (user.getWorld().isClient) return ActionResult.SUCCESS;
+            if (user.getEntityWorld().isClient()) return ActionResult.SUCCESS;
             if (entity instanceof CameraEntity cam) {
                 toggleGravity(cam, user);
                 return ActionResult.SUCCESS;
@@ -795,7 +795,7 @@ public class ServerItems {
 
         @Override
         public ActionResult use(World world, PlayerEntity user, Hand hand) {
-            if (world.isClient) return ActionResult.SUCCESS;
+            if (world.isClient()) return ActionResult.SUCCESS;
             if (isCreative(user)) {
                 CameraEntity cam = raycastCamera(world, user, 20.0);
                 if (cam != null) {
@@ -827,7 +827,7 @@ public class ServerItems {
 
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
-            if (user.getWorld().isClient) return ActionResult.SUCCESS;
+            if (user.getEntityWorld().isClient()) return ActionResult.SUCCESS;
             UUID userId = user.getUuid();
 
             if (entity instanceof CameraEntity cam) {
@@ -842,7 +842,7 @@ public class ServerItems {
                         user.sendMessage(Text.literal("Camera detached"), true);
                     } else {
                         cam.setAttachTargetUuid(user.getUuid());
-                        cam.setAttachOffset(cam.getPos().subtract(user.getPos()));
+                        cam.setAttachOffset(cam.getEntityPos().subtract(user.getEntityPos()));
                         user.sendMessage(Text.literal("Camera now follows you"), true);
                     }
                 }
@@ -852,11 +852,11 @@ public class ServerItems {
             // Click non-camera entity: attach selected camera to it
             UUID selectedCamUuid = CAMERA_FIXER_SELECTION.get(userId);
             if (selectedCamUuid != null) {
-                ServerWorld world = (ServerWorld) user.getWorld();
+                ServerWorld world = (ServerWorld) user.getEntityWorld();
                 Entity camEntity = world.getEntity(selectedCamUuid);
                 if (camEntity instanceof CameraEntity cam) {
                     cam.setAttachTargetUuid(entity.getUuid());
-                    cam.setAttachOffset(cam.getPos().subtract(entity.getPos()));
+                    cam.setAttachOffset(cam.getEntityPos().subtract(entity.getEntityPos()));
                     CAMERA_FIXER_SELECTION.remove(userId);
                     user.sendMessage(Text.literal("Camera attached to " + entity.getName().getString()), true);
                     return ActionResult.SUCCESS;
@@ -870,7 +870,7 @@ public class ServerItems {
 
         @Override
         public ActionResult use(World world, PlayerEntity user, Hand hand) {
-            if (world.isClient) return ActionResult.SUCCESS;
+            if (world.isClient()) return ActionResult.SUCCESS;
             UUID userId = user.getUuid();
 
             Entity hit = raycastEntity(world, user, 20.0);
@@ -883,7 +883,7 @@ public class ServerItems {
                     Entity camEntity = sw.getEntity(selectedCamUuid);
                     if (camEntity instanceof CameraEntity cam) {
                         cam.setAttachTargetUuid(hit.getUuid());
-                        cam.setAttachOffset(cam.getPos().subtract(hit.getPos()));
+                        cam.setAttachOffset(cam.getEntityPos().subtract(hit.getEntityPos()));
                         CAMERA_FIXER_SELECTION.remove(userId);
                         user.sendMessage(Text.literal("Camera attached to " + hit.getName().getString()), true);
                         return ActionResult.SUCCESS;
@@ -905,7 +905,7 @@ public class ServerItems {
                         user.sendMessage(Text.literal("Camera detached"), true);
                     } else {
                         cam.setAttachTargetUuid(user.getUuid());
-                        cam.setAttachOffset(cam.getPos().subtract(user.getPos()));
+                        cam.setAttachOffset(cam.getEntityPos().subtract(user.getEntityPos()));
                         user.sendMessage(Text.literal("Camera now follows you"), true);
                     }
                 }
@@ -982,7 +982,7 @@ public class ServerItems {
             UUID camUuid = CAMERA_MOVER_UUIDS.get(userId);
             if (distance == null || camUuid == null) continue;
 
-            ServerWorld world = (ServerWorld) player.getWorld();
+            ServerWorld world = (ServerWorld) player.getEntityWorld();
             Entity camera = world.getEntity(camUuid);
             if (camera == null) {
                 CAMERA_MOVER_ACTIVENESS.remove(userId);
@@ -992,7 +992,7 @@ public class ServerItems {
             }
 
             Vec3d dir = player.getRotationVector().normalize();
-            Vec3d target = player.getPos().add(dir.multiply(distance));
+            Vec3d target = player.getEntityPos().add(dir.multiply(distance));
             camera.requestTeleport(target.x, target.y, target.z);
         }
 
@@ -1004,7 +1004,7 @@ public class ServerItems {
             UUID camUuid = CAMERA_COMMAND_STORAGE.get(player.getUuid());
             if (camUuid == null) continue;
 
-            ServerWorld world = (ServerWorld) player.getWorld();
+            ServerWorld world = (ServerWorld) player.getEntityWorld();
             Entity entity = world.getEntity(camUuid);
             if (entity instanceof CameraEntity cam) {
                 updateForcedChunks(world, cam);
@@ -1025,7 +1025,7 @@ public class ServerItems {
         @Override
         public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
             if (entity instanceof CameraEntity cam) {
-                if (!user.getWorld().isClient()) {
+                if (!user.getEntityWorld().isClient()) {
                     cam.remove(net.minecraft.entity.Entity.RemovalReason.KILLED);
                     user.sendMessage(Text.literal("Camera removed"), true);
                 }

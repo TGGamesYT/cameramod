@@ -12,7 +12,6 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.EntityModelLayerRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.EntityRendererRegistry;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.Mouse;
 import net.minecraft.client.option.KeyBinding;
@@ -104,6 +103,15 @@ public class CameramodClient implements ClientModInitializer {
         = new java.util.concurrent.atomic.AtomicInteger(-1_800_000_000);
     private static int nextClientCameraId() {
         return clientCameraIdCounter.getAndDecrement();
+    }
+
+    // Per-frame attachment/fixer pipeline, formerly registered on Fabric's
+    // WorldRenderEvents.START (removed in the 1.21.9 world-render refactor).
+    // WorldRendererMixin now invokes onWorldRenderStart() at the head of
+    // WorldRenderer.render — the same point the old event fired from.
+    private static Runnable worldRenderStartHandler;
+    public static void onWorldRenderStart() {
+        if (worldRenderStartHandler != null) worldRenderStartHandler.run();
     }
 
     // Persistent cache of CameraEntity references for any camera we've ever seen.
@@ -293,7 +301,7 @@ public class CameramodClient implements ClientModInitializer {
 
         // Camera mode keybind (F9)
         cameraModeKey = KeyBindingHelper.registerKeyBinding(
-            new KeyBinding("key.cameramod.camera_mode", GLFW.GLFW_KEY_F9, "key.categories.gameplay")
+            new KeyBinding("key.cameramod.camera_mode", GLFW.GLFW_KEY_F9, KeyBinding.Category.GAMEPLAY)
         );
 
         loadClientConfig();
@@ -420,7 +428,7 @@ public class CameramodClient implements ClientModInitializer {
             if (isCamera) {
                 client.options.pauseOnLostFocus = originalPauseState;
                 client.options.hudHidden = originalF1State;
-                if (client.player != null) client.cameraEntity = client.player;
+                if (client.player != null) client.setCameraEntity(client.player);
                 isCamera = false;
             }
             serverHasMod = false;
@@ -552,13 +560,13 @@ public class CameramodClient implements ClientModInitializer {
             Mouse mouse = mc.mouse;
             if (isCamera) {
                 isCamera = false;
-                mc.cameraEntity = context.player();
+                mc.setCameraEntity(context.player());
                 mc.gameRenderer.getCamera().reset();
                 mc.options.hudHidden = originalF1State;
                 mc.options.pauseOnLostFocus = originalPauseState;
             } else {
                 isCamera = true;
-                mc.cameraEntity = context.player().getWorld().getEntity(payload.uuid());
+                mc.setCameraEntity(context.player().getEntityWorld().getEntity(payload.uuid()));
                 mc.gameRenderer.getCamera().reset();
                 originalF1State = mc.options.hudHidden;
                 originalPauseState = mc.options.pauseOnLostFocus;
@@ -608,7 +616,7 @@ public class CameramodClient implements ClientModInitializer {
         // Per-frame client-side updates for all camera entities:
         // - Fixer rotation (smooth interpolated tracking)
         // - Attachment position (smooth lerp avoids 20tps server lag)
-        WorldRenderEvents.START.register(context -> {
+        worldRenderStartHandler = () -> {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc.world == null) return;
             // Our own camera pass calls gameRenderer.renderWorld() which makes
@@ -618,7 +626,7 @@ public class CameramodClient implements ClientModInitializer {
             // lastRender values shift between the two invocations. Only run
             // during the player's render pass.
             if (CameraRenderer.isRendering()) return;
-            float tickDelta = context.tickCounter().getTickProgress(false);
+            float tickDelta = mc.getRenderTickCounter().getTickProgress(false);
             // Pass 1: attachment position. Pass 2: fixer rotation.
             // Order matters — fixer reads cam position to compute look-at angle, so
             // the cam must already be at its final frame position when fixer runs,
@@ -921,7 +929,7 @@ public class CameramodClient implements ClientModInitializer {
                     if (cam != null) place.accept(cam, editMoveDistance);
                 }
             }
-        });
+        };
 
         // ENTITY_UNLOAD also clears from CLIENT_CAMERAS
         // (fires if we ever explicitly add client cameras to the world)
@@ -1153,7 +1161,7 @@ public class CameramodClient implements ClientModInitializer {
         int code = key.getCode();
         return switch (key.getCategory()) {
             case KEYSYM -> code != GLFW.GLFW_KEY_UNKNOWN
-                    && net.minecraft.client.util.InputUtil.isKeyPressed(handle, code);
+                    && net.minecraft.client.util.InputUtil.isKeyPressed(client.getWindow(), code);
             case MOUSE  -> GLFW.glfwGetMouseButton(handle, code) == GLFW.GLFW_PRESS;
             default     -> false;
         };
@@ -1341,7 +1349,7 @@ public class CameramodClient implements ClientModInitializer {
                     mc.player.sendMessage(net.minecraft.text.Text.literal("Camera mover stopped"), true);
                 } else if (entity instanceof CameraEntity cam3 && CLIENT_CAMERAS.containsKey(cam3.getUuid())) {
                     clientMoverCamUuid = cam3.getUuid();
-                    clientMoverDistance = cam3.getPos().distanceTo(mc.player.getPos());
+                    clientMoverDistance = cam3.getEntityPos().distanceTo(mc.player.getEntityPos());
                     clientMoverActive = true;
                     cam3.setBeingMoved(true);
                     mc.player.sendMessage(net.minecraft.text.Text.literal("Camera mover started"), true);
@@ -1401,7 +1409,7 @@ public class CameramodClient implements ClientModInitializer {
                     clientSelectedCamera = null;
                     if (cam10 != null && entity != null && !(entity instanceof CameraEntity)) {
                         cam10.setAttachTargetUuid(entity.getUuid());
-                        cam10.setAttachOffset(cam10.getPos().subtract(entity.getPos()));
+                        cam10.setAttachOffset(cam10.getEntityPos().subtract(entity.getEntityPos()));
                         mc.player.sendMessage(net.minecraft.text.Text.literal("Camera attached to " + entity.getName().getString()), true);
                     } else {
                         mc.player.sendMessage(net.minecraft.text.Text.literal("Camera selection cleared"), true);
@@ -1421,7 +1429,7 @@ public class CameramodClient implements ClientModInitializer {
                             if (cam9.getAttachMode() == 1 && wasDetached) {
                                 // stored local-space orbit offset is already correct
                             } else {
-                                net.minecraft.util.math.Vec3d delta = cam9.getPos().subtract(mc.player.getPos());
+                                net.minecraft.util.math.Vec3d delta = cam9.getEntityPos().subtract(mc.player.getEntityPos());
                                 if (cam9.getAttachMode() == 1) {
                                     float yr = (float)(mc.player.getYaw() * Math.PI / 180.0);
                                     double lx =  delta.x * Math.cos(yr) + delta.z * Math.sin(yr);
@@ -1514,7 +1522,7 @@ public class CameramodClient implements ClientModInitializer {
         // Seed distance from current camera position so the camera doesn't snap.
         CameraEntity cam = findAnyCamera(mc, camUuid);
         if (cam != null && mc.player != null) {
-            editMoveDistance = Math.max(1.0, cam.getPos().distanceTo(mc.player.getPos()));
+            editMoveDistance = Math.max(1.0, cam.getEntityPos().distanceTo(mc.player.getEntityPos()));
         }
 
         if (serverHasMod && cam != null && !cam.isClientOnly()) {
@@ -1579,7 +1587,7 @@ public class CameramodClient implements ClientModInitializer {
                 cam.setFixedTargetUuid(target.getUuid());
             } else {
                 cam.setAttachTargetUuid(target.getUuid());
-                cam.setAttachOffset(cam.getPos().subtract(target.getPos()));
+                cam.setAttachOffset(cam.getEntityPos().subtract(target.getEntityPos()));
             }
         } else if (serverHasMod) {
             java.util.UUID nil = CameraServerThing.CameraItemUseC2SPayload.NIL;
@@ -1732,7 +1740,7 @@ public class CameramodClient implements ClientModInitializer {
                 if (cam.getAttachMode() == 1 && wasDetached) {
                     // stored offset is correct — nothing to do
                 } else {
-                    net.minecraft.util.math.Vec3d delta = cam.getPos().subtract(mc.player.getPos());
+                    net.minecraft.util.math.Vec3d delta = cam.getEntityPos().subtract(mc.player.getEntityPos());
                     if (cam.getAttachMode() == 1) {
                         float yr = (float)(mc.player.getYaw() * Math.PI / 180.0);
                         double lx =  delta.x * Math.cos(yr) + delta.z * Math.sin(yr);

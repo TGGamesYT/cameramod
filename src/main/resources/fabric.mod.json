@@ -12,7 +12,6 @@
     "discord": "https://tggamesyt.dev/discord?flashz"
   },
   "license": "GNU GENERAL PUBLIC LICENSE",
-  "--accessWidener": "cameramod.accesswidener",
   "icon": "assets/cameramod/textures/item/camera_item.png",
   "environment": "*",
   "entrypoints": {
@@ -36,6 +35,6 @@
   "depends": {
     "fabricloader": ">=${loader_version}",
     "fabric": "*",
-    "minecraft": "${minecraft_version}"
+    "minecraft": ">=1.21.9 <1.21.11"
   }
 }

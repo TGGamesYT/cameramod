@@ -3,9 +3,9 @@ package dev.tggamesyt.cameramod.mixin.client;
 import dev.tggamesyt.cameramod.client.CameraRenderer;
 import dev.tggamesyt.cameramod.client.VivecraftCompat;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.AbstractClientPlayerEntity;
 import net.minecraft.client.render.entity.PlayerEntityRenderer;
 import net.minecraft.client.render.entity.state.PlayerEntityRenderState;
+import net.minecraft.entity.PlayerLikeEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -31,21 +31,29 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * {@code isVrMode}, which stays true when the headset is removed or VR is
  * hot-switch-paused; keying off it would keep drawing the last frozen VR pose
  * after VR is disabled in-game). A no-op otherwise / without Vivecraft.
- * {@code require = 0} so a signature change on a future MC version just disables
- * the effect instead of breaking mixin apply.
+ *
+ * <p>1.21.9+ note: the player renderer is still {@code PlayerEntityRenderer}
+ * (intermediary {@code class_1007}) and the state is still
+ * {@code PlayerEntityRenderState} ({@code class_10055}), but the entity parameter
+ * of {@code updateRenderState} is now {@code PlayerLikeEntity} ({@code class_11890})
+ * instead of {@code AbstractClientPlayerEntity}. {@code require = 0} so a further
+ * signature change just disables the effect instead of breaking mixin apply.
  */
 @Mixin(PlayerEntityRenderer.class)
 public class PlayerEntityRendererVrMixin {
 
-    @Inject(method = "updateRenderState(Lnet/minecraft/client/network/AbstractClientPlayerEntity;"
+    @Inject(method = "updateRenderState(Lnet/minecraft/entity/PlayerLikeEntity;"
             + "Lnet/minecraft/client/render/entity/state/PlayerEntityRenderState;F)V",
             at = @At("RETURN"), require = 0)
-    private void cameramod$forceLocalVrBody(AbstractClientPlayerEntity entity,
+    private void cameramod$forceLocalVrBody(PlayerLikeEntity entity,
             PlayerEntityRenderState state, float tickDelta, CallbackInfo ci) {
+        MinecraftClient mc = MinecraftClient.getInstance();
         if (CameraRenderer.isRendering()
                 && VivecraftCompat.isVrPassActive()
-                && entity == MinecraftClient.getInstance().player) {
-            VivecraftCompat.applyLocalPlayerVrBody(state, entity, tickDelta);
+                && entity == mc.player) {
+            // mc.player is a LivingEntity (ClientPlayerEntity); pass it so the
+            // reflective getMainPlayerRotInfo(LivingEntity,float) call resolves.
+            VivecraftCompat.applyLocalPlayerVrBody(state, mc.player, tickDelta);
         }
     }
 }

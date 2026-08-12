@@ -100,8 +100,10 @@ public class MouseMixin {
      * the EditCameraScreen reopens; in select mode a right-click on a non-camera
      * entity sets that entity as the camera's target.
      */
+    // 1.21.9: (long, int button, int action, int mods) -> (long, MouseInput, int action)
     @Inject(method = "onMouseButton", at = @At("HEAD"), cancellable = true)
-    private void cameramod$interceptButton(long window, int button, int action, int mods, CallbackInfo ci) {
+    private void cameramod$interceptButton(long window, net.minecraft.client.input.MouseInput input, int action, CallbackInfo ci) {
+        int button = input.button();
         if (action != GLFW.GLFW_PRESS) return;
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.currentScreen != null) return; // screen open → vanilla handles it

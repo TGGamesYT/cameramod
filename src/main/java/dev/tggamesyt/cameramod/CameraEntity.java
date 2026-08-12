@@ -222,7 +222,7 @@ public class CameraEntity extends LivingEntity {
         // this checks y=64.95 → BlockPos y=64 → the solid block below → true.
         // If feet are at y=65.5 (floating), this checks y=65.45 → BlockPos y=65 → air → false.
         BlockPos feetBlock = BlockPos.ofFloored(this.getX(), this.getY() - 0.05, this.getZ());
-        World w = this.getWorld();
+        World w = this.getEntityWorld();
         return !w.getBlockState(feetBlock).getCollisionShape(w, feetBlock).isEmpty();
     }
 
@@ -299,9 +299,9 @@ public class CameraEntity extends LivingEntity {
     }
 
     @Override
-    public void setVelocityClient(double x, double y, double z) {
+    public void setVelocityClient(Vec3d velocity) {
         if (this.clientOnly) return;
-        super.setVelocityClient(x, y, z);
+        super.setVelocityClient(velocity);
     }
 
     @Override
@@ -309,7 +309,7 @@ public class CameraEntity extends LivingEntity {
         // For client-only entities, the client is the authoritative side, so it must
         // tick movement (gravity, collisions). Default behavior returns true only on
         // the server, which prevents client-side gravity from ever applying.
-        return !this.getWorld().isClient || this.clientOnly;
+        return !this.getEntityWorld().isClient() || this.clientOnly;
     }
 
     @Override
@@ -320,7 +320,7 @@ public class CameraEntity extends LivingEntity {
         // Gravity: always server-side; client-side only for client-owned entities
         // (server-tracked entities get authoritative position each tick, so running
         // gravity client-side too would cause jitter).
-        if (!this.getWorld().isClient || this.clientOnly) {
+        if (!this.getEntityWorld().isClient() || this.clientOnly) {
             if (!isGravityEnabled() || isBeingMoved()) {
                 this.setNoGravity(true);
             } else if (this.dataTracker.get(GROUNDED)) {
@@ -336,9 +336,9 @@ public class CameraEntity extends LivingEntity {
         }
 
         // Attachment: server-side only (client handles per-frame in WorldRenderEvents.START)
-        if (!this.getWorld().isClient) {
+        if (!this.getEntityWorld().isClient()) {
             UUID attachUuid = getAttachTargetUuid();
-            if (attachUuid != null && this.getWorld() instanceof ServerWorld sw) {
+            if (attachUuid != null && this.getEntityWorld() instanceof ServerWorld sw) {
                 net.minecraft.entity.Entity attachTarget = sw.getEntity(attachUuid);
                 if (attachTarget != null) {
                     Vec3d offset = getAttachOffset();
@@ -371,7 +371,7 @@ public class CameraEntity extends LivingEntity {
         // the per-frame fixer pulls it toward the target: that tug-of-war is the
         // "rapid look-at oscillation" seen when a fixed camera is off-screen (the
         // entity still ticks, but the renderer never refreshes its visual state).
-        if (this.getWorld().isClient && !this.clientRotationLocked
+        if (this.getEntityWorld().isClient() && !this.clientRotationLocked
                 && (getFixedTargetUuid() != null || getAttachTargetUuid() != null)) {
             this.getInterpolator().clear();
         }
@@ -379,7 +379,7 @@ public class CameraEntity extends LivingEntity {
         // Client-side: while the edit screen is rotating this camera, override
         // the server-driven interpolation that super.tick() just applied so the
         // camera holds exactly the rotation the user's mouse produced.
-        if (this.getWorld().isClient && this.clientRotationLocked) {
+        if (this.getEntityWorld().isClient() && this.clientRotationLocked) {
             this.getInterpolator().clear();
             this.headTrackingIncrements = 0;
             this.setYaw(this.clientLockedYaw);

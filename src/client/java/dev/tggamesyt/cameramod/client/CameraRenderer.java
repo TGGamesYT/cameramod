@@ -1024,13 +1024,6 @@ public class CameraRenderer {
             // viewpoint and uploads BEFORE it draws, so both views are correct.
             // No-op when Sodium isn't present. (restore() in onFrameRendered undoes
             // it next frame.)
-            // Save entity debug stats before the camera pass. render() sets
-            // renderedEntitiesCount = renderedEntities.size() internally. If render()
-            // exits early (exception), renderedEntities may not get cleared, causing
-            // the player pass to accumulate on top of the camera pass's entities.
-            // We also clear it in the finally block below as a safety net.
-            int savedRenderedEntitiesCount = wrAccess.cameramod$getRenderedEntitiesCount();
-
             // Swap in the camera's own cloud geometry so the camera renders
             // clouds from its real position (world-fixed) without rebuilding the
             // player's cloud buffer. swapOut (below) restores the player's and
@@ -1078,12 +1071,6 @@ public class CameraRenderer {
             try {
                 ((GameRendererAccessor) gameRenderer).cameramod$getFogRenderer().rotate();
             } catch (Throwable ignored) {}
-
-            // Clear camera-pass entity state so the player pass starts clean.
-            // render() normally does this at its own end, but if it threw, the
-            // clear was skipped and the player pass would see accumulated entities.
-            wrAccess.cameramod$getRenderedEntities().clear();
-            wrAccess.cameramod$setRenderedEntitiesCount(savedRenderedEntitiesCount);
 
             // Remember where the camera pass left the sort position (for next frame's
             // camera pass) and restore the player's value so the player pass sees

@@ -24,6 +24,7 @@
     "MouseMixin",
     "PlayerEntityRendererVrMixin",
     "PlayerInventoryMixin",
+    "WeatherRenderingMixin",
     "WorldRendererAccessor",
     "WorldRendererMixin"
   ],
