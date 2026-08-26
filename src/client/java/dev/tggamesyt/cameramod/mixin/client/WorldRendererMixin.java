@@ -11,6 +11,7 @@ import net.minecraft.util.math.Vec3d;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
@@ -56,21 +57,36 @@ public class WorldRendererMixin {
     }
 
     // ─── Render the local player in the camera view ──────────────────────────
-    // 1.21.9's fillEntityRenderStates skips ANY ClientPlayerEntity that is not
-    // the camera's focused entity — vanilla only draws the local player when
-    // it IS the focus (third person). During the camera pass the focus is the
-    // CameraEntity, so the local player would never appear in the stream.
-    // Defeat that instanceof during the camera pass so the player is treated
-    // like any other entity; the focused-entity check just above it still
-    // keeps the camera entity itself out of its own first-person view.
-    // (Only one INSTANCEOF ClientPlayerEntity exists in the method.)
-    @org.spongepowered.asm.mixin.injection.Redirect(
+    // fillEntityRenderStates skips a ClientPlayerEntity unless it IS the camera's
+    // focused entity — vanilla only draws the local player in third person. The
+    // vanilla check is:
+    //     if (entity instanceof ClientPlayerEntity
+    //             && camera.getFocusedEntity() != entity) continue;   // skip
+    // During the camera pass the focus is the CameraEntity, so the local player
+    // would never appear in the stream.
+    //
+    // Redirect the getFocusedEntity() call INSIDE that check (ordinal 3 — the
+    // fourth and last in the method) to return the local player during the camera
+    // pass, so `!= entity` is false for the local player and it renders. Only
+    // that one call is touched, so the earlier "don't draw the focused entity in
+    // first person" logic (ordinals 0-2) is untouched, and instanceof
+    // ClientPlayerEntity is only ever true for the local player anyway.
+    //
+    // This replaces an @At("CONSTANT", classValue=...) redirect of the instanceof:
+    // loom does NOT remap classValue, so that form scanned 0 targets and crashed
+    // mixin apply in a built (remapped) jar while working in dev (named mappings).
+    // An INVOKE target descriptor IS remapped in place, so this survives remapping.
+    @Redirect(
             method = "fillEntityRenderStates",
-            at = @At(value = "CONSTANT",
-                     args = "classValue=net/minecraft/client/network/ClientPlayerEntity"))
-    private boolean cameramod$renderLocalPlayerInCameraPass(Object entity, Class<?> type) {
-        if (CameraRenderer.isRendering()) return false;
-        return type.isInstance(entity);
+            at = @At(value = "INVOKE",
+                     target = "Lnet/minecraft/client/render/Camera;getFocusedEntity()Lnet/minecraft/entity/Entity;",
+                     ordinal = 3))
+    private Entity cameramod$renderLocalPlayerInCameraPass(Camera camera) {
+        if (CameraRenderer.isRendering()) {
+            Entity player = MinecraftClient.getInstance().player;
+            if (player != null) return player;
+        }
+        return camera.getFocusedEntity();
     }
 
 }
