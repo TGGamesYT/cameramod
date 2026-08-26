@@ -1274,7 +1274,9 @@ public class EditCameraScreen extends Screen {
     }
 
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+    public boolean mouseClicked(net.minecraft.client.gui.Click click, boolean doubled) {
+        double mouseX = click.x(), mouseY = click.y();
+        int button = click.button();
         if (inRotateMode) {
             // A click exits rotate mode before the "Stop" button can receive
             // it, so play the UI click sound manually to keep the button feel.
@@ -1285,7 +1287,7 @@ public class EditCameraScreen extends Screen {
         // The Done/Cancel/Remove bar is overdrawn on top of everything in
         // render(), so it must also win clicks — even when a scrolled widget
         // shares the same screen coordinates behind it.
-        if (clickBottomButton(mouseX, mouseY, button)) return true;
+        if (clickBottomButton(click, doubled)) return true;
         // Scrollbar: dragging the thumb scrolls the input section. Clicking
         // the track outside the thumb jumps the thumb to that point first.
         if (button == 0 && isOverScrollbar(mouseX, mouseY)) {
@@ -1319,15 +1321,15 @@ public class EditCameraScreen extends Screen {
                 return true;
             }
         }
-        return super.mouseClicked(mouseX, mouseY, button);
+        return super.mouseClicked(click, doubled);
     }
 
     /** Dispatches a click straight to a bottom-row button if it lands on one,
      *  bypassing the children-iteration order so they always win their region. */
-    private boolean clickBottomButton(double mouseX, double mouseY, int button) {
+    private boolean clickBottomButton(net.minecraft.client.gui.Click click, boolean doubled) {
         for (ButtonWidget b : new ButtonWidget[]{ doneBtn, cancelBtn, removeBtn }) {
-            if (b != null && b.isMouseOver(mouseX, mouseY)) {
-                return b.mouseClicked(mouseX, mouseY, button);
+            if (b != null && b.isMouseOver(click.x(), click.y())) {
+                return b.mouseClicked(click, doubled);
             }
         }
         return false;
@@ -1335,7 +1337,7 @@ public class EditCameraScreen extends Screen {
 
     private void playUiClickSound() {
         MinecraftClient.getInstance().getSoundManager().play(
-                net.minecraft.client.sound.PositionedSoundInstance.master(
+                net.minecraft.client.sound.PositionedSoundInstance.ui(
                         net.minecraft.sound.SoundEvents.UI_BUTTON_CLICK, 1.0F));
     }
 
@@ -1344,18 +1346,18 @@ public class EditCameraScreen extends Screen {
      *  event. mouseDragged just consumes the event so the field's own
      *  text-selection-by-drag doesn't also react. */
     @Override
-    public boolean mouseDragged(double mouseX, double mouseY, int button,
-                                double deltaX, double deltaY) {
-        if (scrollbarDragging && button == 0) {
-            if (applyScrollbarDrag(mouseY)) clearAndInit();
+    public boolean mouseDragged(net.minecraft.client.gui.Click click, double deltaX, double deltaY) {
+        if (scrollbarDragging && click.button() == 0) {
+            if (applyScrollbarDrag(click.y())) clearAndInit();
             return true;
         }
-        if (dragField != null && button == 0) return true;
-        return super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+        if (dragField != null && click.button() == 0) return true;
+        return super.mouseDragged(click, deltaX, deltaY);
     }
 
     @Override
-    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+    public boolean mouseReleased(net.minecraft.client.gui.Click click) {
+        int button = click.button();
         if (scrollbarDragging && button == 0) {
             scrollbarDragging = false;
             return true;
@@ -1374,12 +1376,13 @@ public class EditCameraScreen extends Screen {
             } else {
                 // Short click — hand it to normal screen dispatch so the field
                 // gets focused and text editing works as usual.
-                super.mouseClicked(dragStartX, dragStartY, button);
-                return super.mouseReleased(mouseX, mouseY, button);
+                super.mouseClicked(new net.minecraft.client.gui.Click(
+                        dragStartX, dragStartY, click.buttonInfo()), false);
+                return super.mouseReleased(click);
             }
             return true;
         }
-        return super.mouseReleased(mouseX, mouseY, button);
+        return super.mouseReleased(click);
     }
 
     // ─── Drag-field helpers ───────────────────────────────────────────────────
@@ -1440,7 +1443,8 @@ public class EditCameraScreen extends Screen {
     // ─── Keyboard ────────────────────────────────────────────────────────────
 
     @Override
-    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+    public boolean keyPressed(net.minecraft.client.input.KeyInput input) {
+        int keyCode = input.key();
         if (inRotateMode) {
             if (keyCode == GLFW.GLFW_KEY_ESCAPE) { exitRotateMode(); return true; }
             return true; // swallow other keys while rotating
@@ -1461,7 +1465,7 @@ public class EditCameraScreen extends Screen {
             setFocused(null);
             return true;
         }
-        return super.keyPressed(keyCode, scanCode, modifiers);
+        return super.keyPressed(input);
     }
 
     private boolean anyFieldFocused() {

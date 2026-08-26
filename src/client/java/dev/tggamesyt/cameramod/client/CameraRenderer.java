@@ -26,12 +26,14 @@ import net.minecraft.client.render.Camera;
 import net.minecraft.client.render.GameRenderer;
 import net.minecraft.client.render.RenderTickCounter;
 import net.minecraft.client.render.fog.FogRenderer;
+import net.minecraft.client.gl.GlobalSettings;
 import net.minecraft.client.option.Perspective;
+import net.minecraft.client.option.TextureFilteringMode;
 import net.minecraft.client.texture.NativeImage;
 import net.minecraft.entity.Entity;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.GameRules;
+import net.minecraft.world.rule.GameRule;
 
 import org.lwjgl.opengl.GL11;
 
@@ -113,18 +115,16 @@ public class CameraRenderer {
     }
 
     // Snap a camera entity's previous-tick pose to its current pose before the
-    // camera pass. Camera.update() (which runs inside renderWorld here) positions
-    // and orients the view by interpolating between the entity's previous-tick
-    // state (lastX/Y/Z, lastYaw/lastPitch) and its current state by the frame's
-    // tick progress — and the eye-height offset (cameraY) is added on TOP of that
-    // interpolated Y. The per-frame fixer/attach/mover position cameras with
-    // setPosition()/setYaw(), which don't touch those prev-tick fields, and
-    // client-only cameras aren't tick-synced — so lastX/Y/Z stay at the camera's
-    // stale spawn/placement value and the rendered eye position gets dragged off
-    // (most visibly in Y: the view sits below the camera's real eye height).
-    // Collapsing prev==current makes the lerp resolve to exactly where the camera
-    // is, so the viewpoint lands at the camera entity's true eye height. (This is
-    // the same fix 1.21.11 applies before its explicit updateCamera() call.)
+    // camera pass. 1.21.11's Camera.update() positions/orients the view by
+    // interpolating between the entity's previous-tick state (lastX/Y/Z,
+    // lastYaw/lastPitch) and its current state by the frame's tick progress.
+    // The per-frame fixer positions cameras with setPosition()/setYaw(), which
+    // never touch those prev-tick fields, and client-only cameras aren't
+    // tick-synced — so lastX/Y/Z stay at the camera's spawn-at-player value and
+    // the rendered viewpoint gets dragged toward the player even though the
+    // camera entity itself is in the right place. Collapsing prev==current makes
+    // the lerp resolve to exactly where the camera is. (Pre-1.21.11 Camera.update
+    // ran inside renderWorld and the camera ticked, so this wasn't needed.)
     private static void syncPrevPose(Entity e) {
         e.lastX = e.getX();
         e.lastY = e.getY();
@@ -887,7 +887,7 @@ public class CameraRenderer {
         // object over to the camera entity. CloudRendererMixin substitutes this
         // for the cameraPos arg during the camera pass so CloudRenderer keeps
         // its centerX/centerZ aligned to the player's cell.
-        savedPlayerCameraPos = mc.gameRenderer.getCamera().getPos();
+        savedPlayerCameraPos = mc.gameRenderer.getCamera().getCameraPos();
 
         Entity savedCameraEntity = mc.getCameraEntity();
         MinecraftClientAccessor accessor = (MinecraftClientAccessor) mc;
@@ -1024,13 +1024,6 @@ public class CameraRenderer {
             // viewpoint and uploads BEFORE it draws, so both views are correct.
             // No-op when Sodium isn't present. (restore() in onFrameRendered undoes
             // it next frame.)
-            // Save entity debug stats before the camera pass. render() sets
-            // renderedEntitiesCount = renderedEntities.size() internally. If render()
-            // exits early (exception), renderedEntities may not get cleared, causing
-            // the player pass to accumulate on top of the camera pass's entities.
-            // We also clear it in the finally block below as a safety net.
-            int savedRenderedEntitiesCount = wrAccess.cameramod$getRenderedEntitiesCount();
-
             // Swap in the camera's own cloud geometry so the camera renders
             // clouds from its real position (world-fixed) without rebuilding the
             // player's cloud buffer. swapOut (below) restores the player's and
@@ -1038,17 +1031,37 @@ public class CameraRenderer {
             // clobber the camera's deferred cloud draw.
             swapInCameraCloudState(mc);
 
-            // In VR, drop out of Vivecraft's stereo render for this one pass so
-            // renderWorld draws a flat mono view from the camera entity into our
-            // offscreen FBO (restored in the finally before the player's real VR
-            // render, which is injected after this pass). No-op without Vivecraft.
+            // In VR, drop out of Vivecraft's stereo render for this whole pass so
+            // updateCamera()/renderWorld draw a flat mono view from the camera
+            // entity into our offscreen FBO instead of applying the VR head pose
+            // (restored in the finally before the player's real VR render, which
+            // is injected after this pass). No-op without Vivecraft.
             boolean vrMono = vrActive && VivecraftCompat.beginMonoRender();
             try {
                 SodiumTranslucencyCompat.beforeCameraPass();
-                // Snap the camera's prev-tick pose to current so Camera.update()
-                // (inside renderWorld) resolves the viewpoint to the camera's exact
-                // position + eye height instead of a stale-lerp that sits too low.
+                // 1.21.11 moved Camera.update() out of renderWorld() into the separate
+                // updateCamera(), which render() only calls AFTER our camera pass (we
+                // inject at render HEAD). Without this the Camera still holds the
+                // player's position and the stream renders from the player's POV.
+                // Reposition it onto the camera entity for the (FIRST_PERSON) pass.
                 syncPrevPose(camera);
+                gameRenderer.updateCamera(tickCounter);
+                // GlobalSettings holds the camera-position GPU UBO consumed by chunk
+                // shaders to compute (chunkOrigin - cameraPos). GameRenderer.render()
+                // normally calls this at offset 232, AFTER our HEAD injection returns,
+                // so it hasn't run yet this frame. Without it the UBO still contains
+                // the previous frame's player position and chunks appear at the player
+                // instead of the camera entity.
+                gameRenderer.getGlobalSettings().set(
+                    mc.getWindow().getFramebufferWidth(),
+                    mc.getWindow().getFramebufferHeight(),
+                    mc.options.getGlintStrength().getValue(),
+                    mc.world != null ? mc.world.getTime() : 0L,
+                    tickCounter,
+                    mc.options.getMenuBackgroundBlurrinessValue(),
+                    gameRenderer.getCamera(),
+                    mc.options.getTextureFiltering().getValue() == TextureFilteringMode.RGSS
+                );
                 gameRenderer.renderWorld(tickCounter);
                 SodiumTranslucencyCompat.afterCameraPass();
             } finally {
@@ -1078,12 +1091,6 @@ public class CameraRenderer {
             try {
                 ((GameRendererAccessor) gameRenderer).cameramod$getFogRenderer().rotate();
             } catch (Throwable ignored) {}
-
-            // Clear camera-pass entity state so the player pass starts clean.
-            // render() normally does this at its own end, but if it threw, the
-            // clear was skipped and the player pass would see accumulated entities.
-            wrAccess.cameramod$getRenderedEntities().clear();
-            wrAccess.cameramod$setRenderedEntitiesCount(savedRenderedEntitiesCount);
 
             // Remember where the camera pass left the sort position (for next frame's
             // camera pass) and restore the player's value so the player pass sees
@@ -1208,7 +1215,7 @@ public class CameraRenderer {
         }
     }
 
-    private static boolean getGameruleBool(GameRules.Key<GameRules.BooleanRule> key) {
+    private static boolean getGameruleBool(GameRule<Boolean> key) {
         if (key == Cameramod.CAMERA_SEES_CHAT) return cameraSeesChatLocal != null ? cameraSeesChatLocal : cameraSeesChatSynced;
         if (key == Cameramod.CAMERA_FLIPPED) return cameraFlippedLocal != null ? cameraFlippedLocal : cameraFlippedSynced;
         return false;
@@ -1279,11 +1286,10 @@ public class CameraRenderer {
             FogRenderer fogRenderer = grAccessor.cameramod$getFogRenderer();
 
             guiState.clear();
-            DrawContext drawContext = new DrawContext(mc, guiState);
-
             float scaleFactor = (float) mc.getWindow().getScaleFactor();
             int   playerScaledW = mc.getWindow().getScaledWidth();
             int   playerScaledH = mc.getWindow().getScaledHeight();
+            DrawContext drawContext = new DrawContext(mc, guiState, playerScaledW, playerScaledH);
 
             // Render at native (1:1 pixel) scale — no stretching.  The GUI
             // projection maps [0, playerScaledW] → NDC [-1,1], so without
@@ -1327,14 +1333,14 @@ public class CameraRenderer {
 
             // Clear GUI state and create fresh DrawContext
             guiState.clear();
-            DrawContext drawContext = new DrawContext(mc, guiState);
-
-            // Render chat into the GUI state
             float scaleFactor = (float) mc.getWindow().getScaleFactor();
             int scaledWidth = (int) (fbWidth / scaleFactor);
             int scaledHeight = (int) (fbHeight / scaleFactor);
+            DrawContext drawContext = new DrawContext(mc, guiState, scaledWidth, scaledHeight);
+
+            // Render chat into the GUI state
             ChatHud chatHud = mc.inGameHud.getChatHud();
-            chatHud.render(drawContext, mc.inGameHud.getTicks(), scaledWidth / 2, scaledHeight, false);
+            chatHud.render(drawContext, mc.textRenderer, mc.inGameHud.getTicks(), scaledWidth / 2, scaledHeight, false, false);
 
             // Flush accumulated GUI draws to the currently bound FBO (our offscreen FBO)
             guiRenderer.render(fogRenderer.getFogBuffer(FogRenderer.FogType.NONE));
@@ -1537,6 +1543,7 @@ public class CameraRenderer {
                 // for them, so without this their card stays blank).
                 mc.options.setPerspective(Perspective.FIRST_PERSON);
                 syncPrevPose(previewCam);
+                gameRenderer.updateCamera(tickCounter);
                 gameRenderer.renderWorld(tickCounter);
                 int fbW = previewFbo.textureWidth;
                 int fbH = previewFbo.textureHeight;
@@ -1564,11 +1571,13 @@ public class CameraRenderer {
             // sees", they're previews of where the camera is in the world.
             mc.options.setPerspective(Perspective.THIRD_PERSON_FRONT);
             syncPrevPose(previewCam);
+            gameRenderer.updateCamera(tickCounter);
             gameRenderer.renderWorld(tickCounter);
             capturePreviewFramebuffer(previewFbo, bytes -> previewFrameFront = bytes);
 
             mc.options.setPerspective(Perspective.THIRD_PERSON_BACK);
             syncPrevPose(previewCam);
+            gameRenderer.updateCamera(tickCounter);
             gameRenderer.renderWorld(tickCounter);
             capturePreviewFramebuffer(previewFbo, bytes -> previewFrameBack = bytes);
         } finally {

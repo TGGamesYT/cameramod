@@ -225,7 +225,7 @@ public final class CameraServerThing {
         ServerPlayNetworking.registerGlobalReceiver(CameraOrientC2SPayload.ID, (payload, context) -> {
             context.server().execute(() -> {
                 net.minecraft.server.world.ServerWorld world =
-                        (net.minecraft.server.world.ServerWorld) context.player().getWorld();
+                        (net.minecraft.server.world.ServerWorld) context.player().getEntityWorld();
                 net.minecraft.entity.Entity entity = world.getEntity(payload.cameraUuid());
                 if (entity instanceof CameraEntity cam) {
                     cam.setYaw(payload.yaw());
@@ -379,7 +379,7 @@ public final class CameraServerThing {
     }
 
     private static void handleCameraEdit(CameraEditC2SPayload p, ServerPlayerEntity player) {
-        net.minecraft.server.world.ServerWorld world = (net.minecraft.server.world.ServerWorld) player.getWorld();
+        net.minecraft.server.world.ServerWorld world = (net.minecraft.server.world.ServerWorld) player.getEntityWorld();
         net.minecraft.entity.Entity ent = world.getEntity(p.cameraUuid());
         if (!(ent instanceof CameraEntity cam)) return;
 
@@ -400,7 +400,7 @@ public final class CameraServerThing {
             UUID at = p.attachTargetUuid().equals(nil) ? null : p.attachTargetUuid();
             if (at != null && cam.getAttachTargetUuid() == null) {
                 net.minecraft.entity.Entity target = world.getEntity(at);
-                if (target != null) cam.setAttachOffset(cam.getPos().subtract(target.getPos()));
+                if (target != null) cam.setAttachOffset(cam.getEntityPos().subtract(target.getEntityPos()));
             }
             cam.setAttachTargetUuid(at);
         }
@@ -426,7 +426,7 @@ public final class CameraServerThing {
     }
 
     private static void handleCameraItemUse(CameraItemUseC2SPayload p, ServerPlayerEntity player) {
-        net.minecraft.server.world.ServerWorld world = (net.minecraft.server.world.ServerWorld) player.getWorld();
+        net.minecraft.server.world.ServerWorld world = (net.minecraft.server.world.ServerWorld) player.getEntityWorld();
         UUID nilUuid = CameraItemUseC2SPayload.NIL;
 
         switch (p.itemSlot()) {
@@ -511,7 +511,7 @@ public final class CameraServerThing {
                 if (p.actionType() == 0 && !p.cameraUuid().equals(nilUuid)) { // start mover
                     net.minecraft.entity.Entity ent = world.getEntity(p.cameraUuid());
                     if (ent instanceof CameraEntity cam) {
-                        double dist = cam.getPos().distanceTo(player.getPos());
+                        double dist = cam.getEntityPos().distanceTo(player.getEntityPos());
                         ServerItems.CAMERA_MOVER_DISTANCE.put(userId, dist);
                         ServerItems.CAMERA_MOVER_UUIDS.put(userId, cam.getUuid());
                         ServerItems.CAMERA_MOVER_ACTIVENESS.put(userId, true);
@@ -598,14 +598,14 @@ public final class CameraServerThing {
                                 player.sendMessage(net.minecraft.text.Text.literal("Camera detached"), true);
                             } else {
                                 cam.setAttachTargetUuid(player.getUuid());
-                                cam.setAttachOffset(cam.getPos().subtract(player.getPos()));
+                                cam.setAttachOffset(cam.getEntityPos().subtract(player.getEntityPos()));
                                 player.sendMessage(net.minecraft.text.Text.literal("Camera attached to you"), true);
                             }
                         } else if (p.actionType() == 1 && !p.targetUuid().equals(nilUuid)) { // attach to target
                             net.minecraft.entity.Entity target = world.getEntity(p.targetUuid());
                             if (target != null) {
                                 cam.setAttachTargetUuid(p.targetUuid());
-                                cam.setAttachOffset(cam.getPos().subtract(target.getPos()));
+                                cam.setAttachOffset(cam.getEntityPos().subtract(target.getEntityPos()));
                                 player.sendMessage(net.minecraft.text.Text.literal("Camera attached to " + target.getName().getString()), true);
                             }
                         } else if (p.actionType() == 2) { // detach

@@ -13,9 +13,9 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.registry.*;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
-import net.minecraft.world.GameRules;
-import net.fabricmc.fabric.api.gamerule.v1.GameRuleFactory;
-import net.fabricmc.fabric.api.gamerule.v1.GameRuleRegistry;
+import net.fabricmc.fabric.api.gamerule.v1.GameRuleBuilder;
+import net.minecraft.world.rule.GameRule;
+import net.minecraft.world.rule.GameRuleCategory;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -44,29 +44,36 @@ public class Cameramod implements ModInitializer {
             .displayName(Text.translatable("itemGroup.Cameramod"))
             .build();
 
-    public static final GameRules.Key<GameRules.BooleanRule> CAMERA_SEES_CHAT =
-            GameRuleRegistry.register("cameraSeesChat", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(false));
+    public static final GameRule<Boolean> CAMERA_SEES_CHAT =
+            GameRuleBuilder.forBoolean(false).category(GameRuleCategory.MISC)
+                    .buildAndRegister(Identifier.of(MOD_ID, "camera_sees_chat"));
 
-    public static final GameRules.Key<GameRules.BooleanRule> CAMERA_FLIPPED =
-            GameRuleRegistry.register("cameraFlipped", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(false));
+    public static final GameRule<Boolean> CAMERA_FLIPPED =
+            GameRuleBuilder.forBoolean(false).category(GameRuleCategory.MISC)
+                    .buildAndRegister(Identifier.of(MOD_ID, "camera_flipped"));
 
-    public static final GameRules.Key<GameRules.BooleanRule> CAMERA_NAME_TAGS =
-            GameRuleRegistry.register("cameraNameTags", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(true));
+    public static final GameRule<Boolean> CAMERA_NAME_TAGS =
+            GameRuleBuilder.forBoolean(true).category(GameRuleCategory.MISC)
+                    .buildAndRegister(Identifier.of(MOD_ID, "camera_name_tags"));
 
-    public static final GameRules.Key<GameRules.BooleanRule> CAMERA_GUI_MODE =
-            GameRuleRegistry.register("cameraGuiMode", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(false));
+    public static final GameRule<Boolean> CAMERA_GUI_MODE =
+            GameRuleBuilder.forBoolean(false).category(GameRuleCategory.MISC)
+                    .buildAndRegister(Identifier.of(MOD_ID, "camera_gui_mode"));
 
-    public static final GameRules.Key<GameRules.BooleanRule> CAMERA_SHOW_PLAYER_GUIS =
-            GameRuleRegistry.register("cameraShowPlayerGuis", GameRules.Category.MISC, GameRuleFactory.createBooleanRule(false));
+    public static final GameRule<Boolean> CAMERA_SHOW_PLAYER_GUIS =
+            GameRuleBuilder.forBoolean(false).category(GameRuleCategory.MISC)
+                    .buildAndRegister(Identifier.of(MOD_ID, "camera_show_player_guis"));
 
     // Max FPS gates. Render at max(stream, virtual); SoftCam send is
     // further gated by VIRTUAL_FPS so feeding it faster than its driver
     // wants doesn't burn JNI calls. Both default to 30.
-    public static final GameRules.Key<GameRules.IntRule> CAMERA_STREAM_FPS =
-            GameRuleRegistry.register("cameraStreamFps", GameRules.Category.MISC, GameRuleFactory.createIntRule(30, 1, 240));
+    public static final GameRule<Integer> CAMERA_STREAM_FPS =
+            GameRuleBuilder.forInteger(30).range(1, 240).category(GameRuleCategory.MISC)
+                    .buildAndRegister(Identifier.of(MOD_ID, "camera_stream_fps"));
 
-    public static final GameRules.Key<GameRules.IntRule> CAMERA_VIRTUAL_FPS =
-            GameRuleRegistry.register("cameraVirtualFps", GameRules.Category.MISC, GameRuleFactory.createIntRule(30, 1, 240));
+    public static final GameRule<Integer> CAMERA_VIRTUAL_FPS =
+            GameRuleBuilder.forInteger(30).range(1, 240).category(GameRuleCategory.MISC)
+                    .buildAndRegister(Identifier.of(MOD_ID, "camera_virtual_fps"));
 
     // Bootstrap defaults; CameramodClient.onInitializeClient overwrites these
     // with the primary monitor's resolution (capped at Full HD) before the

@@ -475,8 +475,9 @@ public class CameraGuiScreen extends Screen {
     // ─── Mouse interaction ────────────────────────────────────────────────────
 
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (currentTab == Tab.CAMERAS && button == 0) {
+    public boolean mouseClicked(net.minecraft.client.gui.Click click, boolean doubled) {
+        double mouseX = click.x(), mouseY = click.y();
+        if (currentTab == Tab.CAMERAS && click.button() == 0) {
             // Sidebar buttons (outside grid scissor area, no scroll needed)
             if (isOnSidebarBtn(0, mouseX, mouseY)) {
                 toggleActivatorOnAir();
@@ -536,7 +537,7 @@ public class CameraGuiScreen extends Screen {
                 }
             }
         }
-        return super.mouseClicked(mouseX, mouseY, button);
+        return super.mouseClicked(click, doubled);
     }
 
     @Override
@@ -978,20 +979,20 @@ public class CameraGuiScreen extends Screen {
     }
 
     @Override
-    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == GLFW.GLFW_KEY_F9) {
+    public boolean keyPressed(net.minecraft.client.input.KeyInput input) {
+        if (input.key() == GLFW.GLFW_KEY_F9) {
             if (f9Suppressed) return true;
             CameramodClient.f9LockedOutUntilRelease = true;
             this.close();
             return true;
         }
-        return super.keyPressed(keyCode, scanCode, modifiers);
+        return super.keyPressed(input);
     }
 
     @Override
-    public boolean keyReleased(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == GLFW.GLFW_KEY_F9) f9Suppressed = false;
-        return super.keyReleased(keyCode, scanCode, modifiers);
+    public boolean keyReleased(net.minecraft.client.input.KeyInput input) {
+        if (input.key() == GLFW.GLFW_KEY_F9) f9Suppressed = false;
+        return super.keyReleased(input);
     }
 
     @Override
