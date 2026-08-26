@@ -32,7 +32,7 @@ public class CloudRendererMixin {
     // rebuild. Preview clouds being aligned to the player is invisible at
     // thumbnail size and avoids stutter while editing.
     @ModifyVariable(
-            method = "renderClouds(ILnet/minecraft/client/option/CloudRenderMode;FLnet/minecraft/util/math/Vec3d;F)V",
+            method = "renderClouds(ILnet/minecraft/client/option/CloudRenderMode;FLnet/minecraft/util/math/Vec3d;JF)V",
             at = @At("HEAD"),
             argsOnly = true,
             ordinal = 0)
